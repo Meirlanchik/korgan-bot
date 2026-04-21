@@ -118,8 +118,9 @@ export function renderProductsPage({
         </div>
       </div>
 
+      <div id="productsMain">
       <div class="card" style="padding:16px 24px;margin-bottom:16px">
-        <form method="get" action="/panel/products" class="flex items-center gap-md flex-wrap">
+        <form id="productsFilterForm" method="get" action="/panel/products" class="flex items-center gap-md flex-wrap">
           <input type="hidden" name="sort" value="${escapeAttr(sort)}">
           <input type="hidden" name="order" value="${escapeAttr(order)}">
           <input class="form-input" name="search" type="text" placeholder="Поиск по названию, SKU..." value="${escapeAttr(search)}" style="max-width:300px">
@@ -197,6 +198,7 @@ export function renderProductsPage({
           <button class="btn btn--ghost btn--sm" type="submit" formaction="/panel/products/bulk/parse" formmethod="post">Переформировать выбранные</button>
           <button class="btn btn--danger btn--sm" type="submit" formaction="/panel/products/bulk/delete" formmethod="post" onclick="return confirmBulkDelete()">Удалить</button>
         </form>
+      </div>
       </div>
 
       ${renderDateTimeScript()}
@@ -460,25 +462,88 @@ export function renderProductsPage({
         }
       }
 
-      document.addEventListener('DOMContentLoaded', syncBulkBar);
-      document.querySelectorAll('form[data-products-async="1"]').forEach((form) => {
-        form.addEventListener('submit', async (event) => {
-          if (event.defaultPrevented) return;
-          event.preventDefault();
-          const submitter = event.submitter || form.querySelector('button[type="submit"]');
-          if (form.dataset.busy === '1') return;
-          try {
-            setFormBusy(form, true);
-            const result = await submitAsyncForm(form, submitter);
-            handleAsyncSuccess(form, submitter, result);
-            showPageAlert('success', result.message || 'Операция выполнена.');
-          } catch (error) {
-            showPageAlert('error', error?.message || 'Операция завершилась с ошибкой.');
-          } finally {
-            setFormBusy(form, false);
-          }
+      function bindAsyncForms(scope = document) {
+        scope.querySelectorAll('form[data-products-async="1"]').forEach((form) => {
+          if (form.dataset.asyncBound === '1') return;
+          form.dataset.asyncBound = '1';
+          form.addEventListener('submit', async (event) => {
+            if (event.defaultPrevented) return;
+            event.preventDefault();
+            const submitter = event.submitter || form.querySelector('button[type="submit"]');
+            if (form.dataset.busy === '1') return;
+            try {
+              setFormBusy(form, true);
+              const result = await submitAsyncForm(form, submitter);
+              handleAsyncSuccess(form, submitter, result);
+              showPageAlert('success', result.message || 'Операция выполнена.');
+            } catch (error) {
+              showPageAlert('error', error?.message || 'Операция завершилась с ошибкой.');
+            } finally {
+              setFormBusy(form, false);
+            }
+          });
         });
-      });
+      }
+      async function refreshProductsMain(url, options = {}) {
+        const response = await fetch(url, {
+          headers: {
+            Accept: 'text/html',
+            'X-Requested-With': 'fetch',
+          },
+          ...options,
+        });
+        if (!response.ok) {
+          throw new Error('Не удалось обновить список товаров.');
+        }
+        const html = await response.text();
+        const parser = new DOMParser();
+        const nextDocument = parser.parseFromString(html, 'text/html');
+        const nextMain = nextDocument.getElementById('productsMain');
+        const currentMain = document.getElementById('productsMain');
+        if (!nextMain || !currentMain) {
+          throw new Error('Ответ сервера не содержит блок товаров.');
+        }
+        currentMain.replaceWith(nextMain);
+        syncBulkBar();
+        bindAsyncForms(nextMain);
+        bindLiveFilters(nextMain);
+      }
+      function bindLiveFilters(scope = document) {
+        const filterForm = scope.querySelector('#productsFilterForm');
+        if (filterForm && filterForm.dataset.liveBound !== '1') {
+          filterForm.dataset.liveBound = '1';
+          filterForm.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const params = new URLSearchParams(new FormData(filterForm));
+            const targetUrl = filterForm.action + '?' + params.toString();
+            try {
+              await refreshProductsMain(targetUrl);
+              history.replaceState({}, '', targetUrl);
+            } catch (error) {
+              showPageAlert('error', error?.message || 'Не удалось применить фильтры.');
+            }
+          });
+        }
+        scope.querySelectorAll('th.sortable a').forEach((link) => {
+          if (link.dataset.liveBound === '1') return;
+          link.dataset.liveBound = '1';
+          link.addEventListener('click', async (event) => {
+            event.preventDefault();
+            try {
+              await refreshProductsMain(link.href);
+              history.replaceState({}, '', link.href);
+            } catch (error) {
+              showPageAlert('error', error?.message || 'Не удалось обновить сортировку.');
+            }
+          });
+        });
+      }
+      function initProductsPage() {
+        syncBulkBar();
+        bindAsyncForms(document);
+        bindLiveFilters(document);
+      }
+      document.addEventListener('DOMContentLoaded', initProductsPage);
       document.addEventListener('kaspi:parse_session_updated', (event) => {
         const session = event.detail || {};
         if (priceSessionTypes.has(session.type)) {

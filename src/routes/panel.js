@@ -743,6 +743,12 @@ router.get('/finance', async (req, res) => {
   }
 });
 
+router.get('/finances', (req, res) => {
+  const query = new URLSearchParams(req.query || {});
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  res.redirect(302, `/panel/finance${suffix}`);
+});
+
 router.post('/finance/settings', (req, res) => {
   try {
     saveFinanceSettings(req.body);
