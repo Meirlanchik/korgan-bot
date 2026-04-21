@@ -1,0 +1,1493 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import dotenv from 'dotenv';
+import express from 'express';
+import multer from 'multer';
+import {
+  getAutoPricingTracking,
+  readAutoPricingState,
+  removeAutoPricingTracking,
+  renameAutoPricingTracking,
+  runAutoPricingForAll,
+  runAutoPricingForSku,
+  upsertAutoPricingTracking,
+} from './autoPricing.js';
+import { downloadKaspiPriceList, uploadKaspiPriceList } from './kaspiCabinet.js';
+import {
+  defaultConfigFromEnv,
+  getCurrentStatus,
+  processPriceList,
+  readCatalog,
+  saveCatalog,
+  writeCurrentXml,
+} from './kaspiPriceList.js';
+import { parseKaspiProductById } from './kaspiParser.js';
+
+dotenv.config();
+
+const app = express();
+const port = Number(process.env.PORT || 3000);
+const publicDir = process.env.PUBLIC_DIR || '/app/public';
+const uploadDir = process.env.UPLOAD_DIR || '/app/uploads';
+const publicFeedUrl = process.env.PUBLIC_FEED_URL || 'http://web-server.meirlan.ru/';
+const maxUploadSizeMb = Number(process.env.MAX_UPLOAD_SIZE_MB || 20);
+const kaspiDownloadDir = process.env.KASPI_DOWNLOAD_DIR || '/app/kaspi-downloads';
+const kaspiSessionDir = process.env.KASPI_SESSION_DIR || '/app/kaspi-session';
+const autoPricingFile = process.env.AUTO_PRICING_FILE || path.join(uploadDir, 'auto-pricing.json');
+const upload = multer({
+  dest: uploadDir,
+  limits: {
+    fileSize: maxUploadSizeMb * 1024 * 1024,
+  },
+});
+
+await fs.mkdir(uploadDir, { recursive: true });
+await fs.mkdir(publicDir, { recursive: true });
+await fs.mkdir(kaspiDownloadDir, { recursive: true });
+await fs.mkdir(kaspiSessionDir, { recursive: true });
+await fs.mkdir(path.dirname(autoPricingFile), { recursive: true });
+
+app.disable('x-powered-by');
+app.use(express.urlencoded({ extended: false }));
+app.use(express.json());
+app.use(['/panel', '/api'], basicAuth);
+
+app.get('/health', async (_request, response) => {
+  response.json({ ok: true });
+});
+
+app.get('/api/status', async (_request, response, next) => {
+  try {
+    response.json(await getCurrentStatus(publicDir));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/parser/:kaspiId', async (request, response, next) => {
+  try {
+    response.json(await parseKaspiProductById(request.params.kaspiId));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/auto-pricing', async (_request, response, next) => {
+  try {
+    response.json(await readAutoPricingState(autoPricingFile));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/auto-pricing/run', async (_request, response, next) => {
+  try {
+    response.json(await runAutoPricingBotNow());
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/auto-pricing/:sku/run', async (request, response, next) => {
+  try {
+    response.json(await runAutoPricingForSku({
+      publicDir,
+      trackingFile: autoPricingFile,
+      sku: request.params.sku,
+    }));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/panel/', async (request, response, next) => {
+  try {
+    const status = await getCurrentStatus(publicDir);
+    response.type('html').send(renderPanel({
+      status,
+      config: defaultConfigFromEnv(),
+      message: request.query.message,
+      error: request.query.error,
+      publicFeedUrl,
+      botEnabled: Boolean(process.env.TELEGRAM_BOT_TOKEN),
+    }));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/panel', (_request, response) => {
+  response.redirect('/panel/');
+});
+
+app.get('/panel/products', async (request, response) => {
+  try {
+    const catalog = await readCatalogOrDefault();
+    const autoPricingState = await readAutoPricingState(autoPricingFile);
+    response.type('html').send(renderProductsPage({
+      catalog,
+      autoPricingState,
+      message: request.query.message,
+      error: request.query.error,
+    }));
+  } catch (error) {
+    response.redirect(`/panel/?error=${encodeURIComponent(error.message)}`);
+  }
+});
+
+app.get('/panel/products/new', async (request, response) => {
+  const config = defaultConfigFromEnv();
+  response.type('html').send(renderProductFormPage({
+    title: 'Новый товар',
+    action: '/panel/products',
+    product: emptyProduct(config.storeIds),
+    message: request.query.message,
+    error: request.query.error,
+  }));
+});
+
+app.post('/panel/products', async (request, response) => {
+  try {
+    const catalog = await readCatalogOrDefault();
+    const product = productFromForm(request.body);
+    const tracking = autoPricingTrackingFromForm(request.body);
+    catalog.offers.push(product);
+    await saveCatalog(publicDir, catalog);
+    await upsertAutoPricingTracking(autoPricingFile, product.sku, tracking);
+    response.redirect(`/panel/products?message=${encodeURIComponent(`Товар ${product.sku} добавлен`)}`);
+  } catch (error) {
+    response.redirect(`/panel/products/new?error=${encodeURIComponent(error.message)}`);
+  }
+});
+
+app.get('/panel/products/:sku/edit', async (request, response) => {
+  try {
+    const catalog = await readCatalogOrDefault();
+    const autoPricingState = await readAutoPricingState(autoPricingFile);
+    const product = findProduct(catalog, request.params.sku);
+
+    if (!product) {
+      throw new Error(`Товар ${request.params.sku} не найден.`);
+    }
+
+    response.type('html').send(renderProductFormPage({
+      title: `Редактировать ${product.sku}`,
+      action: `/panel/products/${encodeURIComponent(product.sku)}`,
+      product: {
+        ...product,
+        autoPricing: getAutoPricingTracking(autoPricingState, product.sku),
+      },
+      message: request.query.message,
+      error: request.query.error,
+    }));
+  } catch (error) {
+    response.redirect(`/panel/products?error=${encodeURIComponent(error.message)}`);
+  }
+});
+
+app.post('/panel/products/:sku', async (request, response) => {
+  const originalSku = request.params.sku;
+
+  try {
+    const catalog = await readCatalogOrDefault();
+    const index = catalog.offers.findIndex((offer) => offer.sku === originalSku);
+
+    if (index === -1) {
+      throw new Error(`Товар ${originalSku} не найден.`);
+    }
+
+    const product = productFromForm(request.body);
+    const tracking = autoPricingTrackingFromForm(request.body);
+    catalog.offers[index] = product;
+    await saveCatalog(publicDir, catalog);
+    if (originalSku !== product.sku) {
+      await renameAutoPricingTracking(autoPricingFile, originalSku, product.sku);
+    }
+    await upsertAutoPricingTracking(autoPricingFile, product.sku, tracking);
+    response.redirect(`/panel/products?message=${encodeURIComponent(`Товар ${product.sku} сохранен`)}`);
+  } catch (error) {
+    response.redirect(`/panel/products/${encodeURIComponent(originalSku)}/edit?error=${encodeURIComponent(error.message)}`);
+  }
+});
+
+app.post('/panel/products/:sku/delete', async (request, response) => {
+  try {
+    const catalog = await readCatalogOrDefault();
+    const before = catalog.offers.length;
+    catalog.offers = catalog.offers.filter((offer) => offer.sku !== request.params.sku);
+
+    if (catalog.offers.length === before) {
+      throw new Error(`Товар ${request.params.sku} не найден.`);
+    }
+
+    await saveCatalog(publicDir, catalog);
+    await removeAutoPricingTracking(autoPricingFile, request.params.sku);
+    response.redirect(`/panel/products?message=${encodeURIComponent(`Товар ${request.params.sku} удален`)}`);
+  } catch (error) {
+    response.redirect(`/panel/products?error=${encodeURIComponent(error.message)}`);
+  }
+});
+
+app.post('/panel/products/:sku/auto-price', async (request, response) => {
+  try {
+    const result = await runAutoPricingForSku({
+      publicDir,
+      trackingFile: autoPricingFile,
+      sku: request.params.sku,
+    });
+    const message = result.updated
+      ? `SKU ${result.sku}: цена ${result.oldPrice} -> ${result.newPrice}`
+      : `SKU ${result.sku}: цена уже ${result.newPrice}`;
+    response.redirect(`/panel/products?message=${encodeURIComponent(message)}`);
+  } catch (error) {
+    response.redirect(`/panel/products?error=${encodeURIComponent(error.message)}`);
+  }
+});
+
+app.get('/panel/download', (request, response) => {
+  response.download(path.join(publicDir, 'index.xml'), 'kaspi_catalog.xml');
+});
+
+app.get('/panel/xml', async (request, response, next) => {
+  try {
+    const status = await getCurrentStatus(publicDir);
+    response.type('html').send(renderXmlUploadPage({
+      status,
+      message: request.query.message,
+      error: request.query.error,
+    }));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/panel/xml/upload', upload.single('xmlFile'), async (request, response) => {
+  const file = request.file;
+
+  try {
+    if (!file) {
+      throw new Error('Выберите XML файл.');
+    }
+
+    if (path.extname(file.originalname || '').toLowerCase() !== '.xml') {
+      throw new Error('Нужен файл с расширением .xml.');
+    }
+
+    const result = await processPriceList(file.path, file.originalname, defaultConfigFromEnv());
+    await writeCurrentXml(publicDir, result.xml);
+
+    const suffix = result.warnings?.length ? ` Предупреждения: ${result.warnings.join(' ')}` : '';
+    response.redirect(303, `/panel/products?message=${encodeURIComponent(`Новый XML загружен: ${result.offersCount} товаров.${suffix}`)}`);
+  } catch (error) {
+    response.redirect(303, `/panel/xml?error=${encodeURIComponent(error.message)}`);
+  } finally {
+    if (file?.path) {
+      await fs.rm(file.path, { force: true }).catch(() => {});
+    }
+  }
+});
+
+app.post('/panel/upload', upload.single('priceList'), async (request, response) => {
+  const file = request.file;
+
+  try {
+    if (!file) {
+      throw new Error('Выберите файл прайс-листа.');
+    }
+
+    const config = {
+      company: request.body.company || defaultConfigFromEnv().company,
+      merchantId: request.body.merchantId || defaultConfigFromEnv().merchantId,
+      storeIds: request.body.storeIds || defaultConfigFromEnv().storeIds,
+    };
+    const result = await processPriceList(file.path, file.originalname, config);
+    await writeCurrentXml(publicDir, result.xml);
+
+    const suffix = result.warnings?.length ? ` Есть предупреждения: ${result.warnings.join(' ')}` : '';
+    response.redirect(`/panel/?message=${encodeURIComponent(`Загружено ${result.offersCount} товаров из ${result.sourceType}.${suffix}`)}`);
+  } catch (error) {
+    response.redirect(`/panel/?error=${encodeURIComponent(error.message)}`);
+  } finally {
+    if (file?.path) {
+      await fs.rm(file.path, { force: true }).catch(() => {});
+    }
+  }
+});
+
+app.post('/panel/kaspi/download', async (_request, response) => {
+  try {
+    const result = await pullKaspiPriceList(
+      async (message) => {
+        console.log(`[kaspi-download] ${message}`);
+      },
+      waitForKaspiOtp,
+    );
+
+    response.redirect(303, `/panel/products?message=${encodeURIComponent(`XML скачан из Kaspi и обновлен: ${result.offersCount} товаров`)}`);
+  } catch (error) {
+    response.redirect(303, `/panel/?error=${encodeURIComponent(error.message)}`);
+  }
+});
+
+app.post('/panel/kaspi/upload', async (_request, response) => {
+  try {
+    const result = await pushKaspiPriceList(
+      async (message) => {
+        console.log(`[kaspi-upload] ${message}`);
+      },
+      waitForKaspiOtp,
+    );
+
+    response.redirect(303, `/panel/?message=${encodeURIComponent(`XML загружен в Kaspi: ${path.basename(result.filePath)}`)}`);
+  } catch (error) {
+    response.redirect(303, `/panel/?error=${encodeURIComponent(error.message)}`);
+  }
+});
+
+app.post('/panel/auto-pricing/run', async (_request, response) => {
+  try {
+    const results = await runAutoPricingBotNow();
+    const updated = results.filter((result) => result.updated).length;
+    const failed = results.filter((result) => result.error).length;
+    response.redirect(303, `/panel/products?message=${encodeURIComponent(`Автопрайсинг завершен: ${results.length} товаров, изменено ${updated}, ошибок ${failed}.`)}`);
+  } catch (error) {
+    response.redirect(303, `/panel/products?error=${encodeURIComponent(error.message)}`);
+  }
+});
+
+app.use((error, _request, response, _next) => {
+  console.error(error);
+  response.status(500).type('html').send(renderError(error));
+});
+
+app.listen(port, () => {
+  console.log(`Kaspi panel is listening on ${port}`);
+});
+
+startAutoPricingScheduler();
+
+startTelegramBot().catch((error) => {
+  console.error('Telegram bot failed:', error);
+});
+
+let autoPricingRunInProgress = false;
+let pendingOtpResolver = null;
+
+async function runAutoPricingBotNow(onMessage = async (message) => console.log(`[auto-pricing] ${message}`)) {
+  if (autoPricingRunInProgress) {
+    throw new Error('Автопрайсинг уже выполняется.');
+  }
+
+  autoPricingRunInProgress = true;
+
+  try {
+    return await runAutoPricingForAll({
+      publicDir,
+      trackingFile: autoPricingFile,
+      onMessage,
+    });
+  } finally {
+    autoPricingRunInProgress = false;
+  }
+}
+
+function startAutoPricingScheduler() {
+  const intervalMs = Number(process.env.KASPI_PRICE_UPDATE_INTERVAL_MS || 10 * 60 * 1000);
+
+  if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+    console.log('Auto pricing scheduler is disabled');
+    return;
+  }
+
+  setInterval(() => {
+    runAutoPricingBotNow().catch((error) => {
+      console.error('Auto pricing scheduler failed:', error.message);
+    });
+  }, intervalMs);
+
+  console.log(`Auto pricing scheduler interval: ${intervalMs} ms`);
+}
+
+async function startTelegramBot() {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) {
+    console.log('TELEGRAM_BOT_TOKEN is empty, bot is disabled');
+    return;
+  }
+
+  const apiBase = `https://api.telegram.org/bot${token}`;
+  const fileBase = `https://api.telegram.org/file/bot${token}`;
+  const allowedChatIds = new Set(
+    String(process.env.TELEGRAM_ALLOWED_CHAT_IDS || '')
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean),
+  );
+  let offset = 0;
+
+  const sendMessage = async (chatId, text) => {
+    await telegramRequest(apiBase, 'sendMessage', { chat_id: chatId, text });
+  };
+
+  const guard = async (message) => {
+    const chatId = String(message.chat.id);
+    if (allowedChatIds.size === 0 || allowedChatIds.has(chatId)) {
+      return true;
+    }
+
+    await sendMessage(message.chat.id, 'Нет доступа к этому боту.');
+    return false;
+  };
+
+  const handleMessage = async (message) => {
+    if (!message || !(await guard(message))) return;
+
+    if (message.text === '/start') {
+      await sendMessage(message.chat.id, [
+        'Загрузи XML, XLSX или CSV прайс-лист.',
+        'Я проверю файл и обновлю Kaspi XML.',
+        '',
+        `Ссылка для Kaspi: ${publicFeedUrl}`,
+        'Команды: /status, /link, /kaspi_pull, /kaspi_push, /auto_price, /parse_kaspi 123456',
+        'Если Kaspi попросит код, пришли /kaspi_code 123456',
+      ].join('\n'));
+      return;
+    }
+
+    if (message.text === '/link') {
+      await sendMessage(message.chat.id, publicFeedUrl);
+      return;
+    }
+
+    if (message.text?.startsWith('/kaspi_code')) {
+      const code = message.text.replace('/kaspi_code', '').trim();
+
+      if (!code) {
+        await sendMessage(message.chat.id, 'Пришли код так: /kaspi_code 123456');
+        return;
+      }
+
+      if (!pendingOtpResolver) {
+        await sendMessage(message.chat.id, 'Сейчас нет активного запроса кода.');
+        return;
+      }
+
+      pendingOtpResolver(code);
+      pendingOtpResolver = null;
+      await sendMessage(message.chat.id, 'Код принял, продолжаю вход.');
+      return;
+    }
+
+    if (message.text === '/kaspi_pull') {
+      await sendMessage(message.chat.id, 'Начинаю скачивать прайс-лист из кабинета Kaspi.');
+
+      try {
+        const result = await pullKaspiPriceList(
+          async (text) => sendMessage(message.chat.id, text),
+          waitForKaspiOtp,
+        );
+
+        await sendMessage(message.chat.id, `Готово. Из Kaspi скачано и опубликовано ${result.offersCount} товаров.\n${publicFeedUrl}`);
+      } catch (error) {
+        await sendMessage(message.chat.id, `Не получилось скачать из Kaspi: ${error.message}`);
+      }
+      return;
+    }
+
+    if (message.text === '/kaspi_push') {
+      await sendMessage(message.chat.id, 'Начинаю загружать текущий XML в кабинет Kaspi.');
+
+      try {
+        const result = await pushKaspiPriceList(
+          async (text) => sendMessage(message.chat.id, text),
+          waitForKaspiOtp,
+        );
+
+        await sendMessage(message.chat.id, `Готово. XML отправлен в Kaspi: ${path.basename(result.filePath)}`);
+      } catch (error) {
+        await sendMessage(message.chat.id, `Не получилось загрузить XML в Kaspi: ${error.message}`);
+      }
+      return;
+    }
+
+    if (message.text?.startsWith('/parse_kaspi')) {
+      const kaspiId = message.text.replace('/parse_kaspi', '').trim();
+
+      if (!kaspiId) {
+        await sendMessage(message.chat.id, 'Пришли Kaspi ID так: /parse_kaspi 123456');
+        return;
+      }
+
+      try {
+        await sendMessage(message.chat.id, `Парсю Kaspi товар ${kaspiId}.`);
+        const parsed = await parseKaspiProductById(kaspiId);
+        const sellers = parsed.sellers
+          .slice(0, 5)
+          .map((seller) => `${seller.price} - ${seller.merchantName || seller.merchantId}`)
+          .join('\n');
+        await sendMessage(message.chat.id, [
+          parsed.title,
+          `Цена на карточке: ${parsed.price}`,
+          `Продавцов: ${parsed.sellers.length}`,
+          sellers ? `Первые продавцы:\n${sellers}` : 'Продавцов не нашел.',
+        ].join('\n'));
+      } catch (error) {
+        await sendMessage(message.chat.id, `Парсер не сработал: ${error.message}`);
+      }
+      return;
+    }
+
+    if (message.text === '/auto_price') {
+      await sendMessage(message.chat.id, 'Запускаю автопрайсинг по включенным товарам.');
+
+      try {
+        const results = await runAutoPricingBotNow(async (text) => sendMessage(message.chat.id, text));
+        const updated = results.filter((result) => result.updated).length;
+        const failed = results.filter((result) => result.error).length;
+        await sendMessage(message.chat.id, `Готово. Проверено ${results.length}, изменено ${updated}, ошибок ${failed}.\n${publicFeedUrl}`);
+      } catch (error) {
+        await sendMessage(message.chat.id, `Автопрайсинг не сработал: ${error.message}`);
+      }
+      return;
+    }
+
+    if (message.text === '/status') {
+      try {
+        const status = await getCurrentStatus(publicDir);
+        await sendMessage(message.chat.id, formatStatus(status));
+      } catch (error) {
+        await sendMessage(message.chat.id, `Ошибка статуса: ${error.message}`);
+      }
+      return;
+    }
+
+    if (!message.document) {
+      await sendMessage(message.chat.id, 'Пришли файлом XML, XLSX или CSV прайс-лист.');
+      return;
+    }
+
+    await handleTelegramDocument({
+      apiBase,
+      fileBase,
+      message,
+      sendMessage,
+    });
+  };
+
+  runTelegramPolling({ apiBase, getOffset: () => offset, setOffset: (value) => { offset = value; }, handleMessage });
+
+  console.log('Telegram bot is running');
+}
+
+function waitForKaspiOtp() {
+  return new Promise((resolve) => {
+    pendingOtpResolver = resolve;
+    setTimeout(() => {
+      if (pendingOtpResolver === resolve) {
+        pendingOtpResolver = null;
+        resolve(null);
+      }
+    }, Number(process.env.KASPI_OTP_TIMEOUT_MS || 180_000));
+  });
+}
+
+async function runTelegramPolling({ apiBase, getOffset, setOffset, handleMessage }) {
+  while (true) {
+    try {
+      const updates = await telegramRequest(apiBase, 'getUpdates', {
+        offset: getOffset(),
+        timeout: 25,
+        allowed_updates: ['message'],
+      });
+
+      for (const update of updates.result || []) {
+        setOffset(update.update_id + 1);
+        await handleMessage(update.message);
+      }
+    } catch (error) {
+      console.error('Telegram polling error:', error.message);
+      await delay(3000);
+    }
+  }
+}
+
+async function handleTelegramDocument({ apiBase, fileBase, message, sendMessage }) {
+  const document = message.document;
+  const name = document.file_name || 'price-list';
+  const localPath = path.join(uploadDir, `${Date.now()}-${safeFileName(name)}`);
+
+  try {
+    await sendMessage(message.chat.id, `Принял файл ${name}, обрабатываю.`);
+    const fileInfo = await telegramRequest(apiBase, 'getFile', { file_id: document.file_id });
+    const fileUrl = `${fileBase}/${fileInfo.result.file_path}`;
+    const fileResponse = await fetch(fileUrl);
+
+    if (!fileResponse.ok) {
+      throw new Error(`Telegram не отдал файл: HTTP ${fileResponse.status}`);
+    }
+
+    const buffer = Buffer.from(await fileResponse.arrayBuffer());
+    await fs.writeFile(localPath, buffer);
+
+    const result = await processPriceList(localPath, name, defaultConfigFromEnv());
+    await writeCurrentXml(publicDir, result.xml);
+
+    const warnings = result.warnings?.length ? `\n\nПредупреждения:\n${result.warnings.join('\n')}` : '';
+    await sendMessage(message.chat.id, `Готово. Загружено ${result.offersCount} товаров из ${result.sourceType}.\n${publicFeedUrl}${warnings}`);
+  } catch (error) {
+    await sendMessage(message.chat.id, `Не загрузилось: ${error.message}`);
+  } finally {
+    await fs.rm(localPath, { force: true }).catch(() => {});
+  }
+}
+
+async function telegramRequest(apiBase, method, payload) {
+  const response = await fetch(`${apiBase}/${method}`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Telegram API ${method}: HTTP ${response.status}`);
+  }
+
+  const body = await response.json();
+  if (!body.ok) {
+    throw new Error(`Telegram API ${method}: ${body.description || 'unknown error'}`);
+  }
+
+  return body;
+}
+
+function formatStatus(status) {
+  if (!status.exists) {
+    return 'XML еще не загружен.';
+  }
+
+  return [
+    `XML активен: ${publicFeedUrl}`,
+    `Товаров: ${status.offersCount}`,
+    `Компания: ${status.company || '-'}`,
+    `Merchant ID: ${status.merchantId || '-'}`,
+    `Обновлен: ${status.updatedAt}`,
+  ].join('\n');
+}
+
+async function pullKaspiPriceList(onMessage, requestOtp = async () => null) {
+  const downloaded = await downloadKaspiPriceList({
+    downloadDir: kaspiDownloadDir,
+    sessionDir: kaspiSessionDir,
+    onMessage,
+    requestOtp,
+  });
+  const result = await processPriceList(downloaded.path, downloaded.filename, defaultConfigFromEnv());
+  await writeCurrentXml(publicDir, result.xml);
+  await fs.rm(downloaded.path, { force: true }).catch(() => {});
+  return result;
+}
+
+async function pushKaspiPriceList(onMessage, requestOtp = async () => null) {
+  const filePath = path.join(publicDir, 'index.xml');
+  await fs.access(filePath);
+
+  return uploadKaspiPriceList({
+    filePath,
+    downloadDir: kaspiDownloadDir,
+    sessionDir: kaspiSessionDir,
+    onMessage,
+    requestOtp,
+  });
+}
+
+async function readCatalogOrDefault() {
+  try {
+    return await readCatalog(publicDir);
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      const config = defaultConfigFromEnv();
+      return {
+        company: config.company,
+        merchantId: config.merchantId,
+        offers: [],
+      };
+    }
+
+    throw error;
+  }
+}
+
+function findProduct(catalog, sku) {
+  return catalog.offers.find((offer) => offer.sku === sku);
+}
+
+function emptyProduct(storeIds = []) {
+  return {
+    sku: '',
+    model: '',
+    brand: '',
+    price: '',
+    cityPrices: [{ cityId: process.env.KASPI_CITY_ID || '710000000', price: '' }],
+    availabilities: storeIds.map((storeId) => ({
+      storeId,
+      available: 'yes',
+      stockCount: '',
+      preOrder: '',
+    })),
+  };
+}
+
+function productFromForm(body) {
+  const storeId = body.storeId || defaultConfigFromEnv().storeIds[0] || '30452124_PP2';
+  const cityId = body.cityId || process.env.KASPI_CITY_ID || '710000000';
+  const cityPrice = body.cityPrice || body.price || '';
+
+  return {
+    sku: body.sku,
+    model: body.model,
+    brand: body.brand,
+    price: '',
+    cityPrices: [{ cityId, price: cityPrice }],
+    availabilities: [{
+      storeId,
+      available: body.available || 'yes',
+      stockCount: body.stockCount || '',
+      preOrder: body.preOrder || '',
+    }],
+  };
+}
+
+function autoPricingTrackingFromForm(body) {
+  const hasAnyValue = [
+    body.kaspiId,
+    body.minPrice,
+    body.maxPrice,
+    body.ownMerchantId,
+  ].some((value) => String(value ?? '').trim());
+
+  if (!hasAnyValue && body.autoPricingEnabled !== 'on') {
+    return null;
+  }
+
+  return {
+    kaspiId: body.kaspiId,
+    minPrice: body.minPrice,
+    maxPrice: body.maxPrice,
+    ownMerchantId: body.ownMerchantId,
+    autoPricingEnabled: body.autoPricingEnabled === 'on',
+  };
+}
+
+function parseAvailabilitiesText(value) {
+  return String(value || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const parts = line.split(/[|;,]/).map((part) => part.trim());
+
+      if (parts.length === 1 && line.includes('=')) {
+        const [storeId, stockCount] = line.split('=').map((part) => part.trim());
+        return {
+          storeId,
+          available: stockCount === '0' ? 'no' : 'yes',
+          stockCount,
+          preOrder: '',
+        };
+      }
+
+      return {
+        storeId: parts[0] || '',
+        available: parts[1] || 'yes',
+        stockCount: parts[2] || '',
+        preOrder: parts[3] || '',
+      };
+    });
+}
+
+function parseCityPricesText(value) {
+  return String(value || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const parts = line.includes('=')
+        ? line.split('=')
+        : line.split(/[|;,]/);
+
+      return {
+        cityId: String(parts[0] || '').trim(),
+        price: String(parts[1] || '').trim(),
+      };
+    });
+}
+
+function availabilitiesToText(product) {
+  return (product.availabilities || [])
+    .map((availability) => [
+      availability.storeId,
+      availability.available || 'yes',
+      availability.stockCount || '',
+      availability.preOrder || '',
+    ].join(','))
+    .join('\n');
+}
+
+function cityPricesToText(product) {
+  return (product.cityPrices || [])
+    .map((cityPrice) => `${cityPrice.cityId}=${cityPrice.price}`)
+    .join('\n');
+}
+
+function renderProductsPage({ catalog, autoPricingState, message, error }) {
+  const rows = catalog.offers.map((product) => {
+    const availability = primaryAvailability(product);
+    const cityPrice = primaryCityPrice(product);
+    const tracking = getAutoPricingTracking(autoPricingState, product.sku);
+    const autoStatus = tracking
+      ? `${tracking.autoPricingEnabled === false ? 'выкл' : 'вкл'} / ${tracking.kaspiId}`
+      : '-';
+    const autoRange = tracking
+      ? `${tracking.minPrice} - ${tracking.maxPrice}`
+      : '-';
+
+    return `<tr>
+      <td><strong>${escapeHtml(product.sku)}</strong></td>
+      <td>${escapeHtml(product.model)}</td>
+      <td>${escapeHtml(product.brand)}</td>
+      <td>${escapeHtml(cityPrice.price || product.price || '-')}</td>
+      <td>${escapeHtml(cityPrice.cityId || '-')}</td>
+      <td>${escapeHtml(availability.storeId || '-')}</td>
+      <td>${escapeHtml(availability.available || '-')}</td>
+      <td>${escapeHtml(availability.stockCount || '0')}</td>
+      <td>${escapeHtml(availability.preOrder || '-')}</td>
+      <td>${escapeHtml(autoStatus)}</td>
+      <td>${escapeHtml(autoRange)}</td>
+      <td>${escapeHtml(tracking?.lastRecommendedPrice ?? '-')}</td>
+      <td>${escapeHtml(tracking?.lastCompetitorPrice ?? '-')}</td>
+      <td>${escapeHtml(tracking?.lastParsedAt ?? '-')}</td>
+      <td class="actions">
+        <a class="button secondary" href="/panel/products/${encodeURIComponent(product.sku)}/edit">Редактировать</a>
+        ${tracking ? `
+          <form action="/panel/products/${encodeURIComponent(product.sku)}/auto-price" method="post">
+            <button type="submit">Пересчитать</button>
+          </form>
+        ` : ''}
+        <form action="/panel/products/${encodeURIComponent(product.sku)}/delete" method="post">
+          <button class="danger" type="submit">Удалить</button>
+        </form>
+      </td>
+    </tr>`;
+  }).join('');
+
+  return renderLayout({
+    title: 'Товары',
+    message,
+    error,
+    content: `
+      <section>
+        <div class="toolbar">
+          <div>
+            <h2>Товары</h2>
+            <p>Всего товаров: ${catalog.offers.length}. После сохранения XML сразу обновляется для Kaspi и бота.</p>
+          </div>
+          <div>
+            <a class="button" href="/panel/products/new">Добавить товар</a>
+            <form class="inline-form" action="/panel/auto-pricing/run" method="post">
+              <button type="submit">Запустить автопрайсинг</button>
+            </form>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>SKU</th>
+                <th>Модель</th>
+                <th>Бренд</th>
+                <th>Цена</th>
+                <th>Город</th>
+                <th>Склад</th>
+                <th>Наличие</th>
+                <th>Остаток</th>
+                <th>Предзаказ</th>
+                <th>Автопрайсинг</th>
+                <th>Диапазон</th>
+                <th>Рекомендация</th>
+                <th>Конкурент</th>
+                <th>Последний парсинг</th>
+                <th>Действия</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows || '<tr><td colspan="15">Товаров пока нет.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    `,
+  });
+}
+
+function renderProductFormPage({ title, action, product, message, error }) {
+  const availability = primaryAvailability(product);
+  const cityPrice = primaryCityPrice(product);
+  const autoPricing = product.autoPricing || {};
+  const autoPricingChecked = autoPricing.kaspiId && autoPricing.autoPricingEnabled !== false;
+
+  return renderLayout({
+    title,
+    message,
+    error,
+    content: `
+      <form action="${escapeAttr(action)}" method="post">
+        <h2>${escapeHtml(title)}</h2>
+
+        <label for="sku">SKU</label>
+        <input id="sku" name="sku" type="text" maxlength="20" value="${escapeAttr(product.sku)}" required>
+
+        <label for="model">Название товара</label>
+        <input id="model" name="model" type="text" value="${escapeAttr(product.model)}" required>
+
+        <label for="brand">Бренд</label>
+        <input id="brand" name="brand" type="text" value="${escapeAttr(product.brand)}">
+
+        <label for="cityPrice">Цена для города</label>
+        <input id="cityPrice" name="cityPrice" type="text" inputmode="numeric" value="${escapeAttr(cityPrice.price || product.price)}" required>
+
+        <label for="cityId">ID города</label>
+        <input id="cityId" name="cityId" type="text" inputmode="numeric" value="${escapeAttr(cityPrice.cityId || '710000000')}" required>
+
+        <label for="storeId">Склад Kaspi</label>
+        <input id="storeId" name="storeId" type="text" value="${escapeAttr(availability.storeId || 'PP2')}" required>
+
+        <label for="available">Наличие</label>
+        <select id="available" name="available">
+          <option value="yes"${availability.available !== 'no' ? ' selected' : ''}>yes</option>
+          <option value="no"${availability.available === 'no' ? ' selected' : ''}>no</option>
+        </select>
+
+        <label for="stockCount">Остаток</label>
+        <input id="stockCount" name="stockCount" type="text" inputmode="numeric" value="${escapeAttr(availability.stockCount || '')}">
+
+        <label for="preOrder">Предзаказ, дней</label>
+        <input id="preOrder" name="preOrder" type="text" inputmode="numeric" value="${escapeAttr(availability.preOrder || '')}">
+        <p>Для обычного товара ставь <code>0</code>. Если нужен предзаказ, укажи число от 1 до 30.</p>
+
+        <h2>Автопрайсинг</h2>
+        <p>Если включить автопрайсинг, бот будет парсить продавцов Kaspi, считать цену внутри диапазона и обновлять цену этого SKU в XML.</p>
+
+        <label for="kaspiId">Kaspi ID товара</label>
+        <input id="kaspiId" name="kaspiId" type="text" value="${escapeAttr(autoPricing.kaspiId || '')}">
+
+        <label for="minPrice">Минимальная цена</label>
+        <input id="minPrice" name="minPrice" type="text" inputmode="numeric" value="${escapeAttr(autoPricing.minPrice ?? '')}">
+
+        <label for="maxPrice">Максимальная цена</label>
+        <input id="maxPrice" name="maxPrice" type="text" inputmode="numeric" value="${escapeAttr(autoPricing.maxPrice ?? '')}">
+
+        <label for="ownMerchantId">Свой Merchant ID для исключения</label>
+        <input id="ownMerchantId" name="ownMerchantId" type="text" value="${escapeAttr(autoPricing.ownMerchantId || '')}">
+
+        <label>
+          <input name="autoPricingEnabled" type="checkbox"${autoPricingChecked ? ' checked' : ''}>
+          Включить автопрайсинг
+        </label>
+
+        <button type="submit">Сохранить</button>
+        <a class="button secondary" href="/panel/products">Назад</a>
+      </form>
+    `,
+  });
+}
+
+function renderXmlUploadPage({ status, message, error }) {
+  return renderLayout({
+    title: 'Загрузить XML',
+    message,
+    error,
+    content: `
+      <section>
+        <h2>Текущий XML</h2>
+        <p>Сейчас опубликовано товаров: <strong>${status.offersCount}</strong>.</p>
+        <p>После загрузки новый файл заменит <code>index.xml</code>, товары сразу появятся в панели и по публичной ссылке для Kaspi.</p>
+      </section>
+
+      <form action="/panel/xml/upload" method="post" enctype="multipart/form-data">
+        <h2>Загрузить новый XML</h2>
+        <p>Файл будет проверен как Kaspi XML. SKU автоматически сохраняется только до первого <code>_</code>.</p>
+
+        <label for="xmlFile">XML файл</label>
+        <input id="xmlFile" name="xmlFile" type="file" accept=".xml,text/xml,application/xml" required>
+
+        <button type="submit">Заменить XML</button>
+        <a class="button secondary" href="/panel/products">Назад к товарам</a>
+      </form>
+    `,
+  });
+}
+
+function primaryAvailability(product) {
+  return product.availabilities?.[0] || {
+    storeId: defaultConfigFromEnv().storeIds[0] || '30452124_PP2',
+    available: 'yes',
+    stockCount: '',
+    preOrder: '',
+  };
+}
+
+function primaryCityPrice(product) {
+  return product.cityPrices?.[0] || {
+    cityId: process.env.KASPI_CITY_ID || '710000000',
+    price: product.price || '',
+  };
+}
+
+function renderLayout({ title, content, message, error }) {
+  return `<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(title)} | Kaspi прайс-лист</title>
+  <style>
+    :root {
+      font-family: Arial, Helvetica, sans-serif;
+      color: #161b22;
+      background: #f4f6f8;
+    }
+
+    body {
+      margin: 0;
+    }
+
+    header {
+      padding: 24px;
+      background: #ffffff;
+      border-bottom: 1px solid #d8dee4;
+    }
+
+    nav {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 12px;
+    }
+
+    main {
+      width: min(1180px, calc(100% - 32px));
+      margin: 28px auto;
+    }
+
+    section,
+    form {
+      margin-bottom: 20px;
+      padding: 24px;
+      border: 1px solid #d8dee4;
+      border-radius: 8px;
+      background: #ffffff;
+    }
+
+    h1,
+    h2 {
+      margin: 0 0 12px;
+      line-height: 1.2;
+    }
+
+    p {
+      line-height: 1.5;
+    }
+
+    label {
+      display: block;
+      margin: 14px 0 6px;
+      font-weight: 700;
+    }
+
+    input[type="text"],
+    input[type="file"],
+    select,
+    textarea {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 10px 12px;
+      border: 1px solid #b8c0cc;
+      border-radius: 6px;
+      font: inherit;
+      background: #ffffff;
+    }
+
+    textarea {
+      resize: vertical;
+      font-family: Arial, Helvetica, sans-serif;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #ffffff;
+    }
+
+    th,
+    td {
+      padding: 12px;
+      border-bottom: 1px solid #d8dee4;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: #eef2f7;
+    }
+
+    code {
+      display: inline-block;
+      max-width: 100%;
+      overflow-wrap: anywhere;
+      padding: 3px 6px;
+      border-radius: 4px;
+      background: #eef2f7;
+    }
+
+    .button,
+    button {
+      display: inline-block;
+      margin-top: 10px;
+      padding: 10px 14px;
+      border: 0;
+      border-radius: 6px;
+      color: #ffffff;
+      background: #167347;
+      font: inherit;
+      text-decoration: none;
+      cursor: pointer;
+    }
+
+    .secondary {
+      color: #161b22;
+      background: #e8edf3;
+    }
+
+    .danger {
+      background: #b42318;
+    }
+
+    .message {
+      border-color: #9ad0aa;
+      background: #ecf9ef;
+    }
+
+    .error {
+      border-color: #e7a0a0;
+      background: #fff0f0;
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+    }
+
+    .actions {
+      min-width: 180px;
+    }
+
+    .actions form,
+    .inline-form {
+      display: inline;
+      margin: 0;
+      padding: 0;
+      border: 0;
+      background: transparent;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Kaspi прайс-лист</h1>
+    <nav>
+      <a class="button secondary" href="/panel/">Обзор</a>
+      <a class="button secondary" href="/panel/products">Товары</a>
+      <a class="button secondary" href="/panel/xml">Загрузить XML</a>
+      <a class="button secondary" href="/panel/download">Скачать XML</a>
+    </nav>
+  </header>
+  <main>
+    ${message ? `<section class="message">${escapeHtml(message)}</section>` : ''}
+    ${error ? `<section class="error">${escapeHtml(error)}</section>` : ''}
+    ${content}
+  </main>
+</body>
+</html>`;
+}
+
+function renderPanel({ status, config, message, error, publicFeedUrl, botEnabled }) {
+  return `<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kaspi прайс-лист</title>
+  <style>
+    :root {
+      font-family: Arial, Helvetica, sans-serif;
+      color: #161b22;
+      background: #f4f6f8;
+    }
+
+    body {
+      margin: 0;
+    }
+
+    header {
+      padding: 28px 24px;
+      background: #ffffff;
+      border-bottom: 1px solid #d8dee4;
+    }
+
+    main {
+      width: min(960px, calc(100% - 32px));
+      margin: 28px auto;
+    }
+
+    section,
+    form {
+      margin-bottom: 20px;
+      padding: 24px;
+      border: 1px solid #d8dee4;
+      border-radius: 8px;
+      background: #ffffff;
+    }
+
+    h1,
+    h2 {
+      margin: 0 0 12px;
+      line-height: 1.2;
+    }
+
+    p {
+      line-height: 1.5;
+    }
+
+    label {
+      display: block;
+      margin: 14px 0 6px;
+      font-weight: 700;
+    }
+
+    input[type="text"],
+    input[type="file"],
+    select {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 10px 12px;
+      border: 1px solid #b8c0cc;
+      border-radius: 6px;
+      font: inherit;
+      background: #ffffff;
+    }
+
+    button,
+    .button {
+      display: inline-block;
+      margin-top: 16px;
+      padding: 10px 14px;
+      border: 0;
+      border-radius: 6px;
+      color: #ffffff;
+      background: #167347;
+      font: inherit;
+      text-decoration: none;
+      cursor: pointer;
+    }
+
+    .inline-form {
+      display: inline;
+      margin: 0;
+      padding: 0;
+      border: 0;
+      background: transparent;
+    }
+
+    code {
+      display: inline-block;
+      max-width: 100%;
+      overflow-wrap: anywhere;
+      padding: 3px 6px;
+      border-radius: 4px;
+      background: #eef2f7;
+    }
+
+    .message {
+      border-color: #9ad0aa;
+      background: #ecf9ef;
+    }
+
+    .error {
+      border-color: #e7a0a0;
+      background: #fff0f0;
+    }
+
+    dl {
+      display: grid;
+      grid-template-columns: 160px 1fr;
+      gap: 10px;
+    }
+
+    dt {
+      font-weight: 700;
+    }
+
+    dd {
+      margin: 0;
+      overflow-wrap: anywhere;
+    }
+
+    @media (max-width: 640px) {
+      dl {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Kaspi прайс-лист</h1>
+    <p>Загружай новый XML или Excel/CSV. Активная ссылка для Kaspi: <code>${escapeHtml(publicFeedUrl)}</code></p>
+  </header>
+  <main>
+    ${message ? `<section class="message">${escapeHtml(message)}</section>` : ''}
+    ${error ? `<section class="error">${escapeHtml(error)}</section>` : ''}
+
+    <section>
+      <h2>Текущий файл</h2>
+      <dl>
+        <dt>Статус</dt>
+        <dd>${status.exists ? 'XML опубликован' : 'XML еще не загружен'}</dd>
+        <dt>Товаров</dt>
+        <dd>${status.offersCount}</dd>
+        <dt>Компания</dt>
+        <dd>${escapeHtml(status.company || '-')}</dd>
+        <dt>Merchant ID</dt>
+        <dd>${escapeHtml(status.merchantId || '-')}</dd>
+        <dt>Обновлен</dt>
+        <dd>${status.updatedAt ? escapeHtml(status.updatedAt) : '-'}</dd>
+        <dt>Размер</dt>
+        <dd>${status.size} байт</dd>
+        <dt>Бот</dt>
+        <dd>${botEnabled ? 'включен' : 'выключен, добавь TELEGRAM_BOT_TOKEN в .env'}</dd>
+      </dl>
+      <a class="button" href="/panel/products">Открыть товары</a>
+      <a class="button" href="/panel/xml">Загрузить XML</a>
+      <a class="button" href="/panel/download">Скачать XML</a>
+      <form action="/panel/kaspi/download" method="post">
+        <button type="submit">Скачать из Kaspi кабинета</button>
+      </form>
+      <form class="inline-form" action="/panel/kaspi/upload" method="post">
+        <button type="submit">Загрузить XML в Kaspi</button>
+      </form>
+      <form class="inline-form" action="/panel/auto-pricing/run" method="post">
+        <button type="submit">Запустить автопрайсинг</button>
+      </form>
+    </section>
+
+    <form action="/panel/upload" method="post" enctype="multipart/form-data">
+      <h2>Загрузить Excel/CSV</h2>
+
+      <label for="company">Company</label>
+      <input id="company" name="company" type="text" value="${escapeAttr(config.company)}">
+
+      <label for="merchantId">Merchant ID</label>
+      <input id="merchantId" name="merchantId" type="text" value="${escapeAttr(config.merchantId)}">
+
+      <label for="storeIds">Склад Kaspi</label>
+      <input id="storeIds" name="storeIds" type="text" value="${escapeAttr(config.storeIds.join(','))}">
+
+      <label for="priceList">Файл</label>
+      <input id="priceList" name="priceList" type="file" accept=".xlsx,.csv" required>
+
+      <button type="submit">Загрузить</button>
+    </form>
+
+    <section>
+      <h2>Колонки Excel/CSV</h2>
+      <p><code>SKU</code>, <code>model</code>, <code>brand</code>, <code>price</code>, <code>PP1</code>, <code>PP2</code>, <code>PP3</code>, <code>PP4</code>, <code>PP5</code>, <code>preorder</code>.</p>
+      <p>В PP-колонках можно писать остаток числом, <code>yes</code> или <code>no</code>. Для разных городов можно добавить колонки вида <code>cityprice_750000000</code>.</p>
+    </section>
+  </main>
+</body>
+</html>`;
+}
+
+function renderError(error) {
+  return `<!doctype html>
+<html lang="ru">
+<head><meta charset="utf-8"><title>Ошибка</title></head>
+<body>
+  <h1>Ошибка</h1>
+  <p>${escapeHtml(error.message)}</p>
+  <p><a href="/panel/">Назад в панель</a></p>
+</body>
+</html>`;
+}
+
+function safeFileName(value) {
+  return String(value).replace(/[^A-Za-z0-9._-]/g, '_');
+}
+
+function basicAuth(request, response, next) {
+  const expectedUser = process.env.PANEL_USER;
+  const expectedPassword = process.env.PANEL_PASSWORD;
+
+  if (!expectedUser || !expectedPassword) {
+    next();
+    return;
+  }
+
+  const authorization = request.headers.authorization || '';
+  const [scheme, encoded] = authorization.split(' ');
+
+  if (scheme === 'Basic' && encoded) {
+    const decoded = Buffer.from(encoded, 'base64').toString('utf8');
+    const separator = decoded.indexOf(':');
+    const user = separator >= 0 ? decoded.slice(0, separator) : '';
+    const password = separator >= 0 ? decoded.slice(separator + 1) : '';
+
+    if (user === expectedUser && password === expectedPassword) {
+      next();
+      return;
+    }
+  }
+
+  response
+    .set('WWW-Authenticate', 'Basic realm="Kaspi Panel"')
+    .status(401)
+    .send('Authentication required');
+}
+
+function delay(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function escapeAttr(value) {
+  return escapeHtml(value);
+}
