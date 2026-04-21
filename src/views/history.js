@@ -32,12 +32,6 @@ export function renderHistoryPage({
       (() => {
         let refreshTimer = null;
         const activeTab = ${JSON.stringify(activeTab)};
-        let sessionsState = ${JSON.stringify(sessions).replace(/</g, '\\u003c')};
-        const sessionFilters = ${JSON.stringify({
-          sessionType: filters.sessionType || '',
-          sessionStatus: filters.sessionStatus || '',
-          sessionSource: filters.sessionSource || '',
-        }).replace(/</g, '\\u003c')};
         const scheduleRefresh = () => {
           if (refreshTimer) return;
           refreshTimer = setTimeout(() => {
@@ -50,108 +44,10 @@ export function renderHistoryPage({
             .forEach((eventName) => document.addEventListener(eventName, scheduleRefresh));
         } else {
           document.addEventListener('kaspi:parse_session_updated', (event) => {
-            const session = event.detail || {};
-            if (!session || session.id == null) return;
-            const index = sessionsState.findIndex((item) => String(item.id) === String(session.id));
-            if (index >= 0) {
-              sessionsState[index] = session;
-            } else {
-              sessionsState.unshift(session);
+            if (event.detail && event.detail.status !== 'running') {
+              scheduleRefresh();
             }
-            renderLiveSessions();
           });
-          renderLiveSessions();
-        }
-
-        function renderLiveSessions() {
-          const body = document.getElementById('historySessionsBody');
-          const table = document.getElementById('historySessionsTable');
-          const empty = document.getElementById('historySessionsEmpty');
-          const count = document.getElementById('historySessionsCount');
-          if (!body || !table || !empty || !count) return;
-
-          const filtered = sessionsState
-            .filter(matchesSessionFilters)
-            .sort((a, b) => Number(b.id || 0) - Number(a.id || 0))
-            .slice(0, 200);
-
-          count.textContent = 'Последние ' + filtered.length;
-          body.innerHTML = filtered.map(renderSessionRowClient).join('');
-          table.style.display = filtered.length ? '' : 'none';
-          empty.style.display = filtered.length ? 'none' : '';
-        }
-
-        function matchesSessionFilters(session) {
-          if (sessionFilters.sessionType && session.type !== sessionFilters.sessionType) return false;
-          if (sessionFilters.sessionStatus && session.status !== sessionFilters.sessionStatus) return false;
-          if (sessionFilters.sessionSource && session.trigger_source !== sessionFilters.sessionSource) return false;
-          return true;
-        }
-
-        function renderSessionRowClient(session) {
-          const total = Number(session.total_count || 0);
-          const processed = Number(session.success_count || 0) + Number(session.error_count || 0);
-          const percent = total ? Math.max(0, Math.min(100, Math.round((processed / total) * 100))) : (session.status === 'success' ? 100 : 0);
-          const href = '/panel/parse-sessions/' + encodeURIComponent(session.id);
-          return '<tr>'
-            + '<td><a class="session-link" href="' + href + '"><div class="cell-main">#' + escapeHtml(session.id) + ' ' + escapeHtml(sessionTypeLabel(session.type)) + '</div><div class="cell-sub">' + escapeHtml(session.trigger_source || 'manual') + '</div></a></td>'
-            + '<td>' + sessionStatusBadge(session.status) + '</td>'
-            + '<td><div class="session-progress"><div class="session-progress__head"><span>' + processed + '/' + (total || processed) + '</span><span>' + percent + '%</span></div><div class="session-progress__bar"><div class="session-progress__fill" style="width:' + percent + '%"></div></div></div></td>'
-            + '<td><div>' + formatLocalDateTime(session.started_at) + '</div><div class="cell-sub">Финиш: ' + (session.finished_at ? formatLocalDateTime(session.finished_at) : '—') + '</div></td>'
-            + '<td><div class="session-message"><strong>' + escapeHtml(session.message || sessionStatusText(session.status)) + '</strong></div></td>'
-            + '</tr>';
-        }
-
-        function sessionTypeLabel(type) {
-          const labels = {
-            light_parse: 'Расчет цены',
-            auto_pricing: 'Расчет цены',
-            full_parse: 'Сформировать карточку',
-            selected_products: 'Формирование выбранных',
-            single_product: 'Один товар',
-            kaspi_download: 'Загрузка с Kaspi',
-            kaspi_upload: 'Выгрузка в Kaspi',
-          };
-          return labels[type] || type || 'Сессия';
-        }
-
-        function sessionStatusText(status) {
-          const labels = {
-            running: 'Выполняется',
-            success: 'Завершено успешно',
-            partial: 'Завершено частично',
-            aborted: 'Прервано',
-            error: 'Ошибка',
-          };
-          return labels[status] || 'Сессия';
-        }
-
-        function sessionStatusBadge(status) {
-          if (status === 'success') return '<span class="badge badge--green">OK</span>';
-          if (status === 'running') return '<span class="badge badge--blue">Идет</span>';
-          if (status === 'partial') return '<span class="badge" style="background:#fff8e1;color:#f57f17">Частично</span>';
-          if (status === 'aborted') return '<span class="badge badge--gray">Прервано</span>';
-          return '<span class="badge badge--red">Ошибка</span>';
-        }
-
-        function formatLocalDateTime(value) {
-          if (!value) return '—';
-          const date = new Date(value);
-          if (Number.isNaN(date.getTime())) return '—';
-          return new Intl.DateTimeFormat('ru-RU', {
-            dateStyle: 'short',
-            timeStyle: 'short',
-            timeZone: 'Asia/Almaty',
-          }).format(date);
-        }
-
-        function escapeHtml(value) {
-          return String(value ?? '')
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#39;');
         }
       })();
       </script>
@@ -295,10 +191,10 @@ function renderSessionsBlock({ sessions, filters, rows }) {
     <div class="card card--flush">
       <div class="card__header">
         <h3 class="card__title">Журнал сессий</h3>
-        <span class="text-sm text-muted" id="historySessionsCount">Последние ${sessions.length}</span>
+        <span class="text-sm text-muted">Последние ${sessions.length}</span>
       </div>
       ${sessions.length ? `
-      <div class="table-wrap" id="historySessionsTable">
+      <div class="table-wrap">
         <table>
           <thead>
             <tr>
@@ -309,28 +205,10 @@ function renderSessionsBlock({ sessions, filters, rows }) {
               <th>Итог</th>
             </tr>
           </thead>
-          <tbody id="historySessionsBody">${rows}</tbody>
+          <tbody>${rows}</tbody>
         </table>
-      </div>
-      <div class="session-empty" id="historySessionsEmpty" style="display:none">
-        <div class="session-empty__title">Сессий пока нет</div>
-        <div>После первого запуска пакетной операции история сессий появится здесь.</div>
       </div>` : `
-      <div class="table-wrap" id="historySessionsTable" style="display:none">
-        <table>
-          <thead>
-            <tr>
-              <th>Сессия</th>
-              <th>Статус</th>
-              <th>Прогресс</th>
-              <th>Время</th>
-              <th>Итог</th>
-            </tr>
-          </thead>
-          <tbody id="historySessionsBody"></tbody>
-        </table>
-      </div>
-      <div class="session-empty" id="historySessionsEmpty">
+      <div class="session-empty">
         <div class="session-empty__title">Сессий пока нет</div>
         <div>После первого запуска пакетной операции история сессий появится здесь.</div>
       </div>`}

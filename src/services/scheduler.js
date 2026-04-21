@@ -225,6 +225,7 @@ export async function runAutoPricingNow({
     throw error;
   } finally {
     autoPricingInProgress = false;
+    tryStartQueuedCardBuild();
   }
 }
 
@@ -297,26 +298,7 @@ export function queueProductCardBuild({
 } = {}) {
   const normalizedProducts = normalizeQueuedProducts(products);
   if (!normalizedProducts.length) {
-    return {
-      queuedCount: 0,
-      started: false,
-      scheduled: false,
-      disabled: false,
-      session: null,
-      nextRunAt: null,
-    };
-  }
-
-  const fullParseState = getFullParseSchedulerState();
-  if (!fullParseState.enabled) {
-    return {
-      queuedCount: normalizedProducts.length,
-      started: false,
-      scheduled: false,
-      disabled: true,
-      session: null,
-      nextRunAt: null,
-    };
+    return { queuedCount: 0, started: false, session: null };
   }
 
   for (const product of normalizedProducts) {
@@ -325,13 +307,17 @@ export function queueProductCardBuild({
 
   queuedCardBuildLogPrefix = String(logPrefix || queuedCardBuildLogPrefix).trim() || queuedCardBuildLogPrefix;
   queuedCardBuildHistorySource = String(triggerSource || queuedCardBuildHistorySource).trim() || queuedCardBuildHistorySource;
+
+  const session = tryStartQueuedCardBuild();
+  if (session) {
+    return { queuedCount: 0, started: true, session };
+  }
+
+  scheduleQueuedCardBuildRetry();
   return {
     queuedCount: queuedCardBuildProducts.size,
     started: false,
-    scheduled: true,
-    disabled: false,
     session: null,
-    nextRunAt: fullParseNextRunAt,
   };
 }
 
@@ -537,13 +523,11 @@ function scheduleFullParseNextRun({ logChanges = false, delayMs = null } = {}) {
     }
 
     try {
-      const task = queuedCardBuildProducts.size
-        ? startQueuedCardBuildTask()
-        : startFullParseNow({
-          triggerSource: 'auto',
-          type: 'full_parse',
-          logPrefix: 'Формирование карточек по расписанию',
-        });
+      const task = startFullParseNow({
+        triggerSource: 'auto',
+        type: 'full_parse',
+        logPrefix: 'Формирование карточек по расписанию',
+      });
       await task.promise;
     } catch (error) {
       console.error('Full parse scheduler failed:', error.message);
@@ -751,6 +735,7 @@ async function executeFullParseTask({
     throw error;
   } finally {
     fullParseInProgress = false;
+    tryStartQueuedCardBuild();
   }
 }
 
@@ -820,6 +805,7 @@ async function executeKaspiDownloadTask({
     throw error;
   } finally {
     kaspiPullInProgress = false;
+    tryStartQueuedCardBuild();
   }
 }
 
@@ -913,6 +899,7 @@ async function executeKaspiUploadTask({
     throw error;
   } finally {
     kaspiPushInProgress = false;
+    tryStartQueuedCardBuild();
   }
 }
 
@@ -1127,13 +1114,32 @@ function buildFullParseSummary(results, triggerSource, logPrefix) {
   return `${triggerSource === 'auto' ? 'Авто' : 'Ручной'} ${logPrefix.toLowerCase()}: товаров ${results.length}, ошибок ${failedCount}, позиций ${positionsFound}`;
 }
 
-function startQueuedCardBuildTask() {
+function scheduleQueuedCardBuildRetry(delayMs = SCHEDULER_BUSY_RETRY_MS) {
+  if (queuedCardBuildTimer) {
+    clearTimeout(queuedCardBuildTimer);
+  }
+
   if (!queuedCardBuildProducts.size) {
-    throw new Error('Нет новых товаров в очереди на формирование карточек.');
+    queuedCardBuildTimer = null;
+    return;
+  }
+
+  queuedCardBuildTimer = setTimeout(() => {
+    queuedCardBuildTimer = null;
+    const session = tryStartQueuedCardBuild();
+    if (!session && queuedCardBuildProducts.size) {
+      scheduleQueuedCardBuildRetry();
+    }
+  }, Math.max(0, Number(delayMs) || 0));
+}
+
+function tryStartQueuedCardBuild() {
+  if (!queuedCardBuildProducts.size) {
+    return null;
   }
 
   if (autoPricingInProgress || fullParseInProgress || kaspiPushInProgress) {
-    throw new Error('Очередь карточек пока занята другой фоновой операцией.');
+    return null;
   }
 
   const products = [...queuedCardBuildProducts.values()];
@@ -1156,7 +1162,7 @@ function startQueuedCardBuildTask() {
     logRuntime('product_parse', 'error', `${queuedCardBuildLogPrefix} завершилось ошибкой: ${error.message}`);
   });
 
-  return task;
+  return task.session;
 }
 
 function normalizeQueuedProducts(products) {

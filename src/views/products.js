@@ -24,6 +24,9 @@ export function renderProductsPage({
   if (availableFilter !== '') filterParams.set('available', availableFilter);
   const refreshUrl = `/panel/products${filterParams.toString() ? `?${filterParams}` : ''}`;
   const bulkWarehouseControls = renderBulkWarehouseControls(products, merchantId);
+  const session = currentPriceCalculationSession || latestPriceCalculationSession;
+  const sessionDetails = parseSessionDetails(session?.details);
+  const progress = buildSessionProgress(session, sessionDetails);
 
   const rows = products.map((product) => {
     const image = firstProductImage(product);
@@ -33,13 +36,7 @@ export function renderProductsPage({
     const warehouses = Array.isArray(product.warehouses) ? product.warehouses : [];
     const buildState = buildStatesBySku[product.sku] || null;
 
-    return `<tr
-      data-product-row="1"
-      data-sku="${escapeAttr(product.sku)}"
-      data-min-price="${escapeAttr(product.min_price || 0)}"
-      data-max-price="${escapeAttr(product.max_price || 0)}"
-      data-last-parsed-at="${escapeAttr(product.last_parsed_at || '')}"
-    >
+    return `<tr>
       <td>
         <input class="product-check" form="bulkForm" type="checkbox" name="skus" value="${escapeAttr(product.sku)}" onchange="syncBulkBar()">
       </td>
@@ -53,17 +50,17 @@ export function renderProductsPage({
         <div class="cell-sub">SKU: ${escapeHtml(product.sku)}</div>
         ${product.brand ? `<div class="cell-sub">${escapeHtml(product.brand)}</div>` : ''}
       </td>
-      <td data-role="available-cell">${available ? '<span class="badge badge--green">В продаже</span>' : '<span class="badge badge--gray">Не в продаже</span>'}</td>
-      <td data-role="autopricing-cell">${autoPricing ? '<span class="badge badge--blue">Вкл</span>' : '<span class="badge badge--gray">Выкл</span>'}</td>
-      <td data-role="build-status-cell">${renderBuildStatus(buildState, product.last_parsed_at)}</td>
-      <td data-role="price-cell"><strong>${formatPrice(price)}</strong></td>
-      <td data-role="position-cell">${product.my_position ? escapeHtml(product.my_position) : '—'}</td>
-      <td data-role="minmax-cell">${formatMinMax(product)}</td>
+      <td>${available ? '<span class="badge badge--green">В продаже</span>' : '<span class="badge badge--gray">Не в продаже</span>'}</td>
+      <td>${autoPricing ? '<span class="badge badge--blue">Вкл</span>' : '<span class="badge badge--gray">Выкл</span>'}</td>
+      <td>${renderBuildStatus(buildState, product.last_parsed_at)}</td>
+      <td><strong>${formatPrice(price)}</strong></td>
+      <td>${product.my_position ? escapeHtml(product.my_position) : '—'}</td>
+      <td>${formatMinMax(product)}</td>
       <td>${renderWarehouseSummary(warehouses)}</td>
       <td>
         <div class="actions">
           <a class="btn btn--ghost btn--xs" href="/panel/products/${encodeURIComponent(product.sku)}">Открыть</a>
-          <form data-products-async="1" action="/panel/products/${encodeURIComponent(product.sku)}/delete" method="post" style="display:inline;margin:0" onsubmit="return confirm('Удалить товар ${escapeAttr(jsString(product.sku))}?')">
+          <form action="/panel/products/${encodeURIComponent(product.sku)}/delete" method="post" style="display:inline;margin:0" onsubmit="return confirm('Удалить товар ${escapeAttr(jsString(product.sku))}?')">
             <button class="btn btn--danger btn--xs" type="submit">Удалить</button>
           </form>
         </div>
@@ -77,43 +74,36 @@ export function renderProductsPage({
     message,
     error,
     content: `
-      <div class="form-row" style="align-items:start">
-        <div class="card" style="margin-bottom:16px">
-          <div class="card__header">
-            <div>
-              <h3 class="card__title">Операции по каталогу</h3>
-              <div class="card__subtitle">Локальные действия по таблице и карточкам товаров без переходов на другие страницы.</div>
-            </div>
-          </div>
-          <div class="card__body">
-            <div class="quick-actions">
-              <a class="btn btn--ghost" href="${escapeAttr(refreshUrl)}">Обновить таблицу</a>
-              <form data-products-async="1" action="/panel/auto-pricing/run" method="post">
-                <button class="btn btn--ghost" type="submit">Рассчитать все</button>
-              </form>
-              <form data-products-async="1" action="/panel/products/parse-all" method="post">
-                <button class="btn btn--ghost" type="submit">Переформировать все</button>
-              </form>
-            </div>
+      ${renderLivePricePanel({
+        state: priceCalculationState,
+        latestSession: latestPriceCalculationSession,
+        session,
+        progress,
+        productsCount: priceCalculationProductsCount,
+      })}
+
+      <div class="card">
+        <div class="card__header">
+          <div>
+            <h3 class="card__title">Быстрые действия</h3>
+            <div class="card__subtitle">Кнопки загрузки из Kaspi и массовых действий вынесены наверх, чтобы были всегда под рукой.</div>
           </div>
         </div>
-
-        <div class="card" style="margin-bottom:16px">
-          <div class="card__header">
-            <div>
-              <h3 class="card__title">Kaspi</h3>
-              <div class="card__subtitle">Синхронизация с кабинетом продавца вынесена отдельно, потому что это другой контекст и отдельные фоновые сессии.</div>
-            </div>
-          </div>
-          <div class="card__body">
-            <div class="quick-actions">
-              <form data-products-async="1" action="/panel/kaspi/download" method="post">
-                <button class="btn btn--accent" type="submit">Обновить с Kaspi</button>
-              </form>
-              <form data-products-async="1" action="/panel/kaspi/upload" method="post">
-                <button class="btn btn--success" type="submit">Загрузить в Kaspi</button>
-              </form>
-            </div>
+        <div class="card__body">
+          <div class="quick-actions">
+            <a class="btn btn--ghost" href="${escapeAttr(refreshUrl)}">Обновить таблицу</a>
+            <form action="/panel/kaspi/download" method="post">
+              <button class="btn btn--accent" type="submit">Обновить с Kaspi</button>
+            </form>
+            <form action="/panel/kaspi/upload" method="post">
+              <button class="btn btn--success" type="submit">Загрузить в Kaspi</button>
+            </form>
+            <form action="/panel/auto-pricing/run" method="post">
+              <button class="btn btn--ghost" type="submit">Рассчитать все</button>
+            </form>
+            <form action="/panel/products/parse-all" method="post">
+              <button class="btn btn--ghost" type="submit">Переформировать все</button>
+            </form>
           </div>
         </div>
       </div>
@@ -129,7 +119,7 @@ export function renderProductsPage({
             <option value="0"${availableFilter === '0' ? ' selected' : ''}>Не в продаже</option>
           </select>
           <button class="btn btn--ghost btn--sm" type="submit">Найти</button>
-          <span class="text-sm text-muted" id="productsCountsSummary" style="margin-left:auto">Всего: ${escapeHtml(counts.total || 0)} (${escapeHtml(counts.active || 0)} акт. / ${escapeHtml(counts.inactive || 0)} неакт.)</span>
+          <span class="text-sm text-muted" style="margin-left:auto">Всего: ${escapeHtml(counts.total || 0)} (${escapeHtml(counts.active || 0)} акт. / ${escapeHtml(counts.inactive || 0)} неакт.)</span>
         </form>
       </div>
 
@@ -160,7 +150,7 @@ export function renderProductsPage({
                 <th>Действия</th>
               </tr>
             </thead>
-            <tbody id="productsTableBody">
+            <tbody>
               ${rows || emptyRow()}
             </tbody>
           </table>
@@ -169,7 +159,7 @@ export function renderProductsPage({
 
       <div class="bulk-bar" id="bulkBar">
         <span class="bulk-bar__count" id="bulkCount">0 выбрано</span>
-        <form id="bulkForm" data-products-async="1" action="/panel/products/bulk/update" method="post" class="bulk-bar__form">
+        <form id="bulkForm" action="/panel/products/bulk/update" method="post" class="bulk-bar__form">
           <select name="bulkAvailable" class="form-select" style="width:auto;min-width:140px">
             <option value="">Продажа...</option>
             <option value="1">В продажу</option>
@@ -201,16 +191,13 @@ export function renderProductsPage({
 
       ${renderDateTimeScript()}
       <script>
-      const buildSessionTypes = new Set(['full_parse', 'selected_products', 'single_product']);
-      const priceSessionTypes = new Set(['light_parse', 'auto_pricing']);
+      const priceSessionState = ${JSON.stringify({
+        sessionId: session?.id || null,
+        sessionType: session?.type || '',
+      }).replace(/</g, '\\u003c')};
 
       function selectedChecks() {
         return Array.from(document.querySelectorAll('.product-check:checked'));
-      }
-      function selectedRows() {
-        return selectedChecks()
-          .map((checkbox) => checkbox.closest('[data-product-row="1"]'))
-          .filter(Boolean);
       }
       function syncBulkBar() {
         const checks = selectedChecks();
@@ -239,137 +226,6 @@ export function renderProductsPage({
         }
         return confirm('Удалить выбранные товары: ' + count + '?');
       }
-      function formatLocalDateTime(value) {
-        if (!value) return '—';
-        const date = new Date(value);
-        if (Number.isNaN(date.getTime())) return '—';
-        return new Intl.DateTimeFormat('ru-RU', {
-          dateStyle: 'short',
-          timeStyle: 'short',
-          timeZone: 'Asia/Almaty',
-        }).format(date);
-      }
-      function renderBuildStatusHtml(mode, value) {
-        if (mode === 'building') {
-          return '<span class="badge badge--blue">Формируется</span><div class="cell-sub">' + formatLocalDateTime(value) + '</div>';
-        }
-        if (mode === 'parsed' && value) {
-          return '<span class="badge badge--green">Сформирована</span><div class="cell-sub">' + formatLocalDateTime(value) + '</div>';
-        }
-        return '<span class="badge badge--gray">Не сформирована</span>';
-      }
-      function showPageAlert(type, text) {
-        if (window.KaspiPanel && typeof window.KaspiPanel.showAlert === 'function') {
-          window.KaspiPanel.showAlert(type, text);
-          return;
-        }
-        if (text) alert(text);
-      }
-      function setFormBusy(form, busy) {
-        form.dataset.busy = busy ? '1' : '0';
-        form.querySelectorAll('button[type="submit"]').forEach((button) => {
-          button.disabled = busy;
-        });
-      }
-      async function submitAsyncForm(form, submitter) {
-        const action = submitter?.formAction || form.action;
-        const method = (submitter?.formMethod || form.method || 'post').toUpperCase();
-        const formData = new FormData(form);
-        if (submitter?.name) {
-          formData.append(submitter.name, submitter.value || '');
-        }
-
-        const response = await fetch(action, {
-          method,
-          body: formData,
-          headers: {
-            Accept: 'application/json',
-            'X-Kaspi-Async': '1',
-          },
-        });
-        const result = await response.json().catch(() => null);
-        if (!response.ok || !result || result.ok === false) {
-          throw new Error(result?.error || 'Операция завершилась с ошибкой.');
-        }
-        return result;
-      }
-      async function refreshProductsSummary() {
-        try {
-          const response = await fetch('/api/stats', { headers: { Accept: 'application/json' } });
-          const stats = await response.json();
-          const node = document.getElementById('productsCountsSummary');
-          if (node) {
-            node.textContent = 'Всего: ' + Number(stats.total || 0) + ' (' + Number(stats.active || 0) + ' акт. / ' + Number(stats.inactive || 0) + ' неакт.)';
-          }
-        } catch {
-          // Ignore soft refresh issues in the counter badge.
-        }
-      }
-      function updateAvailabilityCell(row, available) {
-        const cell = row && row.querySelector('[data-role="available-cell"]');
-        if (!cell) return;
-        cell.innerHTML = Number(available) === 1
-          ? '<span class="badge badge--green">В продаже</span>'
-          : '<span class="badge badge--gray">Не в продаже</span>';
-      }
-      function updateAutoPricingCell(row, enabled) {
-        const cell = row && row.querySelector('[data-role="autopricing-cell"]');
-        if (!cell) return;
-        cell.innerHTML = Number(enabled) === 1
-          ? '<span class="badge badge--blue">Вкл</span>'
-          : '<span class="badge badge--gray">Выкл</span>';
-      }
-      function updatePriceCell(row, value) {
-        const cell = row && row.querySelector('[data-role="price-cell"]');
-        if (!cell) return;
-        cell.innerHTML = '<strong>' + formatPriceValue(value) + '</strong>';
-      }
-      function updatePositionCell(row, value) {
-        const cell = row && row.querySelector('[data-role="position-cell"]');
-        if (!cell) return;
-        cell.textContent = value ? String(value) : '—';
-      }
-      function updateMinMaxCell(row, minPrice, maxPrice) {
-        if (!row) return;
-        if (minPrice !== undefined && minPrice !== null && minPrice !== '') row.dataset.minPrice = String(minPrice);
-        if (maxPrice !== undefined && maxPrice !== null && maxPrice !== '') row.dataset.maxPrice = String(maxPrice);
-        const cell = row.querySelector('[data-role="minmax-cell"]');
-        if (!cell) return;
-        const min = Number(row.dataset.minPrice || 0);
-        const max = Number(row.dataset.maxPrice || 0);
-        cell.textContent = (!min && !max) ? '—' : (formatPriceValue(min) + ' - ' + formatPriceValue(max));
-      }
-      function updateBuildStatusCell(row, mode, value) {
-        const cell = row && row.querySelector('[data-role="build-status-cell"]');
-        if (!cell) return;
-        cell.innerHTML = renderBuildStatusHtml(mode, value);
-      }
-      function formatPriceValue(value) {
-        const amount = Number(value || 0);
-        if (!amount) return '—';
-        return amount.toLocaleString('ru-RU') + ' ₸';
-      }
-      function removeProductRow(sku) {
-        const row = document.querySelector('[data-product-row="1"][data-sku="' + cssEscapeValue(sku) + '"]');
-        if (row) {
-          row.remove();
-        }
-        ensureEmptyTableState();
-        syncBulkBar();
-      }
-      function ensureEmptyTableState() {
-        const body = document.getElementById('productsTableBody');
-        if (!body) return;
-        const rows = body.querySelectorAll('[data-product-row="1"]');
-        if (rows.length) return;
-        body.innerHTML = ${JSON.stringify(emptyRow()).replace(/</g, '\\u003c')};
-      }
-      function cssEscapeValue(value) {
-        if (window.CSS && typeof window.CSS.escape === 'function') {
-          return window.CSS.escape(String(value || ''));
-        }
-        return String(value || '').replace(/"/g, '\\"');
-      }
       function parseSessionDetails(details) {
         if (!details) return {};
         if (typeof details === 'object') return details;
@@ -379,127 +235,103 @@ export function renderProductsPage({
           return {};
         }
       }
-      function applyBulkUpdatesFromForm(form) {
-        const available = form.querySelector('[name="bulkAvailable"]')?.value;
-        const autoPricing = form.querySelector('[name="bulkAutopricing"]')?.value;
-        const minPrice = form.querySelector('[name="bulkMinPrice"]')?.value;
-        const maxPrice = form.querySelector('[name="bulkMaxPrice"]')?.value;
-        selectedRows().forEach((row) => {
-          if (available !== '') updateAvailabilityCell(row, available);
-          if (autoPricing !== '') updateAutoPricingCell(row, autoPricing);
-          if (minPrice !== '') updateMinMaxCell(row, minPrice, undefined);
-          if (maxPrice !== '') updateMinMaxCell(row, undefined, maxPrice);
-        });
-      }
-      function updateRowsFromPriceSession(session) {
-        const details = parseSessionDetails(session?.details);
+      function buildProgress(session) {
+        const details = parseSessionDetails(session && session.details);
         const results = Array.isArray(details.results) ? details.results : [];
-        results.forEach((result) => {
-          const sku = String(result?.sku || '').trim();
-          if (!sku) return;
-          const row = document.querySelector('[data-product-row="1"][data-sku="' + cssEscapeValue(sku) + '"]');
-          if (!row) return;
-          const nextPrice = result?.newPrice ?? result?.newUploadPrice;
-          if (nextPrice !== undefined && nextPrice !== null) {
-            updatePriceCell(row, nextPrice);
-          }
-          if (result?.myPosition !== undefined) {
-            updatePositionCell(row, result.myPosition);
-          }
-        });
+        const total = Number(session && session.total_count || 0);
+        const success = Number(session && session.success_count || 0);
+        const errors = Number(session && session.error_count || 0);
+        const processed = success + errors;
+        const percent = total ? Math.max(0, Math.min(100, Math.round((processed / total) * 100))) : (session && session.status === 'running' ? 0 : 100);
+        const updated = results.filter((item) => item && item.updated).length;
+        return { total, success, errors, processed, percent, updated };
       }
-      function updateRowsFromBuildSession(session) {
-        const details = parseSessionDetails(session?.details);
-        const targetSkus = Array.isArray(details.targetSkus) ? details.targetSkus.map((sku) => String(sku || '').trim()).filter(Boolean) : [];
-        const results = Array.isArray(details.results) ? details.results : [];
-        const resultMap = new Map(results
-          .map((result) => [String(result?.sku || '').trim(), result])
-          .filter((entry) => entry[0]));
-
-        if (session.status === 'running') {
-          targetSkus.forEach((sku) => {
-            if (resultMap.has(sku)) return;
-            const row = document.querySelector('[data-product-row="1"][data-sku="' + cssEscapeValue(sku) + '"]');
-            if (row) updateBuildStatusCell(row, 'building', session.started_at);
-          });
-          return;
-        }
-
-        targetSkus.forEach((sku) => {
-          const row = document.querySelector('[data-product-row="1"][data-sku="' + cssEscapeValue(sku) + '"]');
-          if (!row) return;
-          const result = resultMap.get(sku);
-          if (result && !result.error) {
-            const finishedAt = session.finished_at || session.started_at || new Date().toISOString();
-            row.dataset.lastParsedAt = finishedAt;
-            updateBuildStatusCell(row, 'parsed', finishedAt);
-            return;
-          }
-          updateBuildStatusCell(row, 'parsed', row.dataset.lastParsedAt || '');
-        });
-      }
-      function handleAsyncSuccess(form, submitter, result) {
-        const actionPath = new URL(submitter?.formAction || form.action, location.origin).pathname;
-        if (/\/products\/bulk\/delete$/.test(actionPath)) {
-          selectedChecks().forEach((checkbox) => removeProductRow(checkbox.value));
-          refreshProductsSummary();
-          return;
-        }
-        if (/\/products\/bulk\/update$/.test(actionPath)) {
-          applyBulkUpdatesFromForm(form);
-          refreshProductsSummary();
-          return;
-        }
-        if (/\/products\/bulk\/(?:light-parse|parse)$/.test(actionPath)) {
-          syncBulkBar();
-          return;
-        }
-        if (/\/products\/[^/]+\/delete$/.test(actionPath)) {
-          removeProductRow(result.sku || '');
-          refreshProductsSummary();
-        }
+      function updateLivePricePanel(session) {
+        if (!session || !['light_parse', 'auto_pricing'].includes(session.type)) return;
+        const progress = buildProgress(session);
+        const title = document.getElementById('priceLiveTitle');
+        const meta = document.getElementById('priceLiveMeta');
+        const messageNode = document.getElementById('priceLiveMessage');
+        const progressCount = document.getElementById('priceLiveProgress');
+        const updatedNode = document.getElementById('priceLiveUpdated');
+        const errorsNode = document.getElementById('priceLiveErrors');
+        const bar = document.getElementById('priceLiveBar');
+        const percentNode = document.getElementById('priceLivePercent');
+        if (title) title.textContent = session.status === 'running' ? 'Расчет цены выполняется в реальном времени' : 'Последний пересчет цены';
+        if (meta) meta.textContent = (session.trigger_source === 'auto' ? 'Авто' : 'Ручной') + ' • Сессия #' + session.id;
+        if (messageNode) messageNode.textContent = session.message || '—';
+        if (progressCount) progressCount.textContent = progress.processed + ' / ' + (progress.total || progress.processed);
+        if (updatedNode) updatedNode.textContent = String(progress.updated);
+        if (errorsNode) errorsNode.textContent = String(progress.errors);
+        if (bar) bar.style.width = progress.percent + '%';
+        if (percentNode) percentNode.textContent = progress.percent + '%';
       }
 
       document.addEventListener('DOMContentLoaded', syncBulkBar);
-      document.querySelectorAll('form[data-products-async="1"]').forEach((form) => {
-        form.addEventListener('submit', async (event) => {
-          if (event.defaultPrevented) return;
-          event.preventDefault();
-          const submitter = event.submitter || form.querySelector('button[type="submit"]');
-          if (form.dataset.busy === '1') return;
-          try {
-            setFormBusy(form, true);
-            const result = await submitAsyncForm(form, submitter);
-            handleAsyncSuccess(form, submitter, result);
-            showPageAlert('success', result.message || 'Операция выполнена.');
-          } catch (error) {
-            showPageAlert('error', error?.message || 'Операция завершилась с ошибкой.');
-          } finally {
-            setFormBusy(form, false);
-          }
-        });
-      });
       document.addEventListener('kaspi:parse_session_updated', (event) => {
         const session = event.detail || {};
-        if (priceSessionTypes.has(session.type)) {
-          updateRowsFromPriceSession(session);
+        if (['light_parse', 'auto_pricing'].includes(session.type)) {
+          updateLivePricePanel(session);
         }
-        if (buildSessionTypes.has(session.type)) {
-          updateRowsFromBuildSession(session);
-        }
-      });
-      document.addEventListener('kaspi:product_deleted', (event) => {
-        const sku = String(event.detail?.sku || '').trim();
-        if (!sku) return;
-        removeProductRow(sku);
-        refreshProductsSummary();
-      });
-      document.addEventListener('kaspi:products_changed', () => {
-        refreshProductsSummary();
       });
       </script>
     `,
   });
+}
+
+function renderLivePricePanel({ state, latestSession, session, progress, productsCount }) {
+  const running = Boolean(session && session.status === 'running');
+  const nextRun = !running && state?.enabled && state?.nextRunAt
+    ? renderDateTime(state.nextRunAt, { dateStyle: 'short', timeStyle: 'short' })
+    : '—';
+  const latestLabel = latestSession
+    ? `#${escapeHtml(latestSession.id)} • ${escapeHtml(latestSession.status || '—')}`
+    : 'Сессий пока нет';
+
+  return `
+    <div class="card">
+      <div class="card__header">
+        <div>
+          <h3 class="card__title" id="priceLiveTitle">${running ? 'Расчет цены выполняется в реальном времени' : 'Статус расчета цены'}</h3>
+          <div class="card__subtitle" id="priceLiveMeta">${session ? `${session.trigger_source === 'auto' ? 'Авто' : 'Ручной'} • Сессия #${escapeHtml(session.id)}` : `Последняя сессия: ${latestLabel}`}</div>
+        </div>
+        <div class="session-toolbar">
+          <a class="btn btn--ghost btn--sm" href="/panel/history?tab=sessions">Открыть историю</a>
+          <span class="badge ${running ? 'badge--blue' : state?.enabled ? 'badge--green' : 'badge--gray'}">${running ? 'В работе' : state?.enabled ? 'Авто включен' : 'Авто выключен'}</span>
+        </div>
+      </div>
+      <div class="card__body">
+        <div class="stats" style="margin-bottom:16px">
+          <div class="stat">
+            <div class="stat__label">Товаров в авторасчете</div>
+            <div class="stat__value">${escapeHtml(productsCount || 0)}</div>
+          </div>
+          <div class="stat">
+            <div class="stat__label">Прогресс</div>
+            <div class="stat__value" id="priceLiveProgress">${escapeHtml(progress.processed)} / ${escapeHtml(progress.total || progress.processed)}</div>
+          </div>
+          <div class="stat">
+            <div class="stat__label">Изменено цен</div>
+            <div class="stat__value" id="priceLiveUpdated">${escapeHtml(progress.updated)}</div>
+          </div>
+          <div class="stat">
+            <div class="stat__label">Ошибки</div>
+            <div class="stat__value" id="priceLiveErrors">${escapeHtml(progress.errors)}</div>
+            <div class="stat__note">Следующий запуск: ${nextRun}</div>
+          </div>
+        </div>
+        <div class="session-progress" style="max-width:none">
+          <div class="session-progress__head">
+            <span id="priceLiveMessage">${escapeHtml(session?.message || latestSession?.message || 'Ожидание следующего запуска')}</span>
+            <strong id="priceLivePercent">${escapeHtml(progress.percent)}%</strong>
+          </div>
+          <div class="session-progress__bar" style="height:12px">
+            <div class="session-progress__fill" id="priceLiveBar" style="width:${escapeHtml(progress.percent)}%"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 function renderBuildStatus(buildState, lastParsedAt) {

@@ -117,7 +117,7 @@ export function renderProductDetailPage({
         <div class="tab" onclick="switchTab('history', this)">История (${historyItems.length})</div>
       </div>
 
-      <form id="product-save-form" data-product-async="1" action="/panel/products/${encodeURIComponent(product.sku)}" method="post">
+      <form id="product-save-form" action="/panel/products/${encodeURIComponent(product.sku)}" method="post">
 
       <div class="tab-content active" id="tab-general">
         <div class="card">
@@ -336,16 +336,16 @@ export function renderProductDetailPage({
 
       <div class="form-actions" style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn--primary" type="submit" form="product-save-form">Сохранить</button>
-        <form data-product-async="1" action="/panel/products/${encodeURIComponent(product.sku)}/parse" method="post" style="margin:0">
+        <form action="/panel/products/${encodeURIComponent(product.sku)}/parse" method="post" style="margin:0">
           <button class="btn btn--ghost" type="submit">Переформировать</button>
         </form>
-        <form data-product-async="1" action="/panel/products/${encodeURIComponent(product.sku)}/auto-price" method="post" style="margin:0">
+        <form action="/panel/products/${encodeURIComponent(product.sku)}/auto-price" method="post" style="margin:0">
           <button class="btn btn--accent" type="submit">Рассчитать цену</button>
         </form>
-        <form data-product-async="1" action="/panel/products/${encodeURIComponent(product.sku)}/toggle-available" method="post" style="margin:0">
-          <button class="btn ${product.available ? 'btn--danger' : 'btn--success'}" id="productToggleAvailableButton" type="submit">${product.available ? 'Снять с продажи' : 'Выставить в продажу'}</button>
+        <form action="/panel/products/${encodeURIComponent(product.sku)}/toggle-available" method="post" style="margin:0">
+          <button class="btn ${product.available ? 'btn--danger' : 'btn--success'}" type="submit">${product.available ? 'Снять с продажи' : 'Выставить в продажу'}</button>
         </form>
-        <form data-product-async="1" action="/panel/products/${encodeURIComponent(product.sku)}/delete" method="post" style="margin:0" onsubmit="return confirm('Удалить товар?')">
+        <form action="/panel/products/${encodeURIComponent(product.sku)}/delete" method="post" style="margin:0" onsubmit="return confirm('Удалить товар?')">
           <button class="btn btn--danger btn--sm" type="submit">Удалить</button>
         </form>
       </div>
@@ -383,25 +383,6 @@ export function renderProductDetailPage({
 
       updateUploadPricePreview();
 
-      document.querySelectorAll('form[data-product-async="1"]').forEach((form) => {
-        form.addEventListener('submit', async (event) => {
-          if (event.defaultPrevented) return;
-          event.preventDefault();
-          const submitter = event.submitter || form.querySelector('button[type="submit"]');
-          if (!submitter) return;
-          try {
-            submitter.disabled = true;
-            const result = await submitProductForm(form, submitter);
-            handleProductActionSuccess(form, result);
-            showProductAlert('success', result.message || 'Операция выполнена.');
-          } catch (error) {
-            showProductAlert('error', error?.message || 'Операция завершилась с ошибкой.');
-          } finally {
-            submitter.disabled = false;
-          }
-        });
-      });
-
       function updateUploadPricePreview() {
         const preview = calculatePreviewPrice();
         const priceText = preview.price > 0 ? formatPriceValue(preview.price) : '—';
@@ -425,51 +406,6 @@ export function renderProductDetailPage({
           : diff < 0
             ? 'var(--c-success)'
             : 'inherit';
-      }
-
-      async function submitProductForm(form, submitter) {
-        const formData = new FormData(form);
-        if (submitter.name) {
-          formData.append(submitter.name, submitter.value || '');
-        }
-        const response = await fetch(submitter.formAction || form.action, {
-          method: (submitter.formMethod || form.method || 'post').toUpperCase(),
-          body: formData,
-          headers: {
-            Accept: 'application/json',
-            'X-Kaspi-Async': '1',
-          },
-        });
-        const result = await response.json().catch(() => null);
-        if (!response.ok || !result || result.ok === false) {
-          throw new Error(result?.error || 'Операция завершилась с ошибкой.');
-        }
-        return result;
-      }
-
-      function handleProductActionSuccess(form, result) {
-        const actionPath = new URL(form.action, location.origin).pathname;
-        if (/\/delete$/.test(actionPath)) {
-          location.href = result.redirectTo || '/panel/products';
-          return;
-        }
-        if (/\/toggle-available$/.test(actionPath)) {
-          const button = document.getElementById('productToggleAvailableButton');
-          if (button) {
-            const available = Number(result.available || 0) === 1;
-            button.textContent = available ? 'Снять с продажи' : 'Выставить в продажу';
-            button.classList.toggle('btn--danger', available);
-            button.classList.toggle('btn--success', !available);
-          }
-        }
-      }
-
-      function showProductAlert(type, text) {
-        if (window.KaspiPanel && typeof window.KaspiPanel.showAlert === 'function') {
-          window.KaspiPanel.showAlert(type, text);
-          return;
-        }
-        if (text) alert(text);
       }
 
       function calculatePreviewPrice() {

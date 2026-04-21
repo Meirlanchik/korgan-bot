@@ -83,25 +83,8 @@ a:hover{text-decoration:underline}
   box-shadow:var(--shadow-sm);
 }
 .topbar__title{font-size:18px;font-weight:700;color:var(--c-text)}
-.topbar__actions{display:flex;gap:8px;align-items:center;justify-content:flex-end;flex:1;min-width:0}
+.topbar__actions{display:flex;gap:8px;align-items:center}
 .page{padding:28px 32px 48px;max-width:1280px;width:100%}
-.live-strip{display:flex;gap:8px;align-items:center;justify-content:flex-end;flex-wrap:wrap;width:100%}
-.live-pill{
-  min-width:170px;max-width:240px;padding:8px 10px;border-radius:12px;
-  border:1px solid var(--c-border);background:linear-gradient(180deg,#fff,#f8fafc);
-  box-shadow:var(--shadow-sm);overflow:hidden;
-}
-.live-pill--running{border-color:#bbdefb;background:linear-gradient(180deg,#eef6ff,#fff)}
-.live-pill--warn{border-color:#ffe082;background:linear-gradient(180deg,#fff8e1,#fff)}
-.live-pill--error{border-color:#ef9a9a;background:linear-gradient(180deg,#fff1f1,#fff)}
-.live-pill__label{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--c-text-muted);margin-bottom:4px}
-.live-pill__value{font-size:13px;font-weight:700;color:var(--c-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.live-pill__note{font-size:11px;color:var(--c-text-secondary);margin-top:6px;line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.live-pill__progress{height:6px;border-radius:999px;background:#e7edf5;overflow:hidden;margin-top:6px}
-.live-pill__progress > span{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,var(--c-accent),#26a69a)}
-.live-pill--warn .live-pill__progress > span{background:linear-gradient(90deg,var(--c-warning),#fbc02d)}
-.live-pill--error .live-pill__progress > span{background:linear-gradient(90deg,var(--c-danger),#ef6c00)}
-.live-pill--idle{min-width:auto}
 
 /* ─── Mobile hamburger ─── */
 .hamburger{
@@ -118,7 +101,6 @@ a:hover{text-decoration:underline}
   .content{margin-left:0}
   .hamburger{display:flex}
   .topbar{padding:0 16px}
-  .topbar__actions{display:none}
   .page{padding:20px 16px 40px}
 }
 
@@ -472,172 +454,16 @@ export function renderLayout({ title, content, message, error, activePage = '' }
         <div class="topbar__actions" id="topbar-actions"></div>
       </header>
       <div class="page">
-        <div id="page-alerts">${alertHtml}</div>
+        ${alertHtml}
         ${content}
       </div>
     </div>
   </div>
   <script>
   (() => {
-    const alertsHost = document.getElementById('page-alerts');
-    const topbarActions = document.getElementById('topbar-actions');
     const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
     const endpoint = protocol + '://' + location.host + '/ws';
     let reconnectTimer = null;
-    const sessionStore = new Map();
-    const trackedTypes = new Set(['light_parse', 'auto_pricing', 'full_parse', 'selected_products', 'single_product', 'kaspi_download', 'kaspi_upload']);
-    const checkIcon = ${JSON.stringify(ICONS.check)};
-    const warnIcon = ${JSON.stringify(ICONS.warn)};
-
-    const showAlert = (type, text) => {
-      if (!alertsHost || !text) return;
-      const node = document.createElement('div');
-      node.className = 'alert ' + (type === 'error' ? 'alert--error' : 'alert--success');
-      node.innerHTML = (type === 'error' ? warnIcon : checkIcon) + '<div class="alert__text"></div>';
-      const textNode = node.querySelector('.alert__text');
-      if (textNode) {
-        textNode.textContent = String(text || '');
-      }
-      alertsHost.prepend(node);
-      setTimeout(() => {
-        node.remove();
-      }, 5000);
-    };
-
-    const formatDateTime = (value) => {
-      if (!value) return '—';
-      const date = new Date(value);
-      if (Number.isNaN(date.getTime())) return '—';
-      return new Intl.DateTimeFormat('ru-RU', {
-        dateStyle: 'short',
-        timeStyle: 'short',
-        timeZone: 'Asia/Almaty',
-      }).format(date);
-    };
-
-    const parseSessionDetails = (value) => {
-      if (!value) return {};
-      if (typeof value === 'object') return value;
-      try {
-        return JSON.parse(value);
-      } catch {
-        return {};
-      }
-    };
-
-    const progressForSession = (session) => {
-      const details = parseSessionDetails(session?.details);
-      const upload = details.upload || null;
-      if (upload) {
-        const total = Number(upload.totalCount || session?.total_count || 0);
-        const processed = Number(upload.processedCount || session?.success_count || 0) + Number(upload.errorCount || 0);
-        const errors = Number(upload.errorCount || session?.error_count || 0);
-        const percent = total > 0 ? Math.max(0, Math.min(100, Math.round((processed / total) * 100))) : (session?.status === 'success' ? 100 : 0);
-        return { total, processed, errors, percent };
-      }
-      const total = Number(session?.total_count || 0);
-      const processed = Number(session?.success_count || 0) + Number(session?.error_count || 0);
-      const errors = Number(session?.error_count || 0);
-      const percent = total > 0 ? Math.max(0, Math.min(100, Math.round((processed / total) * 100))) : (session?.status === 'success' ? 100 : 0);
-      return { total, processed, errors, percent };
-    };
-
-    const groupKeyForType = (type) => {
-      if (type === 'light_parse' || type === 'auto_pricing') return 'pricing';
-      if (type === 'full_parse' || type === 'selected_products' || type === 'single_product') return 'build';
-      if (type === 'kaspi_download') return 'pull';
-      if (type === 'kaspi_upload') return 'push';
-      return 'other';
-    };
-
-    const groupLabel = (groupKey) => {
-      if (groupKey === 'pricing') return 'Расчет цены';
-      if (groupKey === 'build') return 'Формирование';
-      if (groupKey === 'pull') return 'Загрузка с Kaspi';
-      if (groupKey === 'push') return 'Выгрузка в Kaspi';
-      return 'Фоновые задачи';
-    };
-
-    const preferSession = (candidate, current) => {
-      if (!current) return true;
-      if (candidate.status === 'running' && current.status !== 'running') return true;
-      if (candidate.status !== 'running' && current.status === 'running') return false;
-      return Number(candidate.id || 0) > Number(current.id || 0);
-    };
-
-    const buildLiveCard = (session) => {
-      const progress = progressForSession(session);
-      const details = parseSessionDetails(session?.details);
-      const upload = details.upload || null;
-      const groupKey = groupKeyForType(session.type);
-      const tone = session.status === 'error'
-        ? 'live-pill live-pill--error'
-        : session.status === 'partial' || session.status === 'aborted'
-          ? 'live-pill live-pill--warn'
-          : session.status === 'running'
-            ? 'live-pill live-pill--running'
-            : 'live-pill';
-      const meta = progress.total
-        ? (String(progress.processed) + '/' + String(progress.total) + ' • ' + String(progress.percent) + '%')
-        : session.status === 'running'
-          ? 'В работе'
-          : 'Ожидание';
-      const note = upload?.statusText || session.message || 'Фоновая задача активна';
-      return '<div class="' + tone + '">'
-        + '<div class="live-pill__label">' + groupLabel(groupKey) + '</div>'
-        + '<div class="live-pill__value">#' + String(session.id || '—') + ' • ' + meta + '</div>'
-        + '<div class="live-pill__progress"><span style="width:' + String(progress.percent || 0) + '%"></span></div>'
-        + '<div class="live-pill__note">' + String(note || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</div>'
-        + '</div>';
-    };
-
-    const renderTopbarLiveStrip = () => {
-      if (!topbarActions) return;
-      const grouped = new Map();
-      for (const session of sessionStore.values()) {
-        if (!trackedTypes.has(session.type)) continue;
-        const groupKey = groupKeyForType(session.type);
-        const current = grouped.get(groupKey);
-        if (preferSession(session, current)) {
-          grouped.set(groupKey, session);
-        }
-      }
-
-      const items = ['build', 'pricing', 'pull', 'push']
-        .map((groupKey) => grouped.get(groupKey))
-        .filter(Boolean);
-
-      if (!items.length) {
-        topbarActions.innerHTML = '<div class="live-strip"><div class="live-pill live-pill--idle"><div class="live-pill__label">Фоновые задачи</div><div class="live-pill__value">Сейчас спокойно</div><div class="live-pill__note">Новых активных сессий нет</div></div></div>';
-        return;
-      }
-
-      topbarActions.innerHTML = '<div class="live-strip">' + items.map(buildLiveCard).join('') + '</div>';
-    };
-
-    const loadInitialSessions = async () => {
-      try {
-        const response = await fetch('/api/parse-sessions?limit=40', {
-          headers: { Accept: 'application/json' },
-        });
-        const sessions = await response.json();
-        if (Array.isArray(sessions)) {
-          sessions.forEach((session) => {
-            if (session && session.id != null) {
-              sessionStore.set(String(session.id), session);
-            }
-          });
-        }
-      } catch {
-        // Ignore initial realtime dashboard bootstrap issues.
-      }
-      renderTopbarLiveStrip();
-    };
-
-    window.KaspiPanel = Object.assign(window.KaspiPanel || {}, {
-      showAlert,
-      formatDateTime,
-    });
 
     const connect = () => {
       let socket;
@@ -655,10 +481,6 @@ export function renderLayout({ title, content, message, error, activePage = '' }
           const parsed = JSON.parse(event.data);
           document.dispatchEvent(new CustomEvent('kaspi:ws', { detail: parsed }));
           if (parsed && parsed.type) {
-            if (parsed.type === 'parse_session_updated' && parsed.payload && parsed.payload.id != null) {
-              sessionStore.set(String(parsed.payload.id), parsed.payload);
-              renderTopbarLiveStrip();
-            }
             document.dispatchEvent(new CustomEvent('kaspi:' + parsed.type, { detail: parsed.payload }));
           }
         } catch {
@@ -685,7 +507,6 @@ export function renderLayout({ title, content, message, error, activePage = '' }
     };
 
     connect();
-    loadInitialSessions();
   })();
   </script>
 </body>

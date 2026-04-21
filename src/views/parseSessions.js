@@ -61,7 +61,6 @@ export function renderParseSessionDetailPage({
   message,
   error,
 }) {
-  const sessionPayload = JSON.stringify(session).replace(/</g, '\\u003c');
   const details = parseSessionDetails(session.details);
   const results = Array.isArray(details.results) ? details.results : [];
   const upload = details.upload || null;
@@ -84,15 +83,15 @@ export function renderParseSessionDetailPage({
         <div class="session-focus">
           <div>
             <div class="session-focus__label">Сессия</div>
-            <div class="session-focus__title" id="sessionDetailTitle">#${escapeHtml(session.id)} ${escapeHtml(typeLabel(session.type))}</div>
-            <div class="session-focus__meta" id="sessionDetailMeta">${sourceLabelText(session.trigger_source)} • ${renderLocalDateTime(session.started_at)}</div>
+            <div class="session-focus__title">#${escapeHtml(session.id)} ${escapeHtml(typeLabel(session.type))}</div>
+            <div class="session-focus__meta">${sourceLabelText(session.trigger_source)} • ${renderLocalDateTime(session.started_at)}</div>
           </div>
-          <div class="session-focus__meta" id="sessionDetailMessage">${escapeHtml(session.message || statusText(session.status))}</div>
+          <div class="session-focus__meta">${escapeHtml(session.message || statusText(session.status))}</div>
         </div>
-        ${liveMetricCard('sessionDetailStatusCard', 'sessionDetailStatusValue', 'sessionDetailStatusNote', 'Статус', stripTags(statusBadge(session.status)), `Потоков: ${escapeHtml(session.concurrency || 1)}`, statusCardClass(session.status))}
-        ${liveMetricCard('sessionDetailProgressCard', 'sessionDetailProgressValue', 'sessionDetailProgressNote', 'Прогресс', `${escapeHtml(progress.processed)} / ${escapeHtml(progress.total)}`, `Успешно: ${escapeHtml(progress.success)} • Ошибок: ${escapeHtml(progress.errors)}`, 'session-metric--blue')}
-        ${liveMetricCard('sessionDetailDurationCard', 'sessionDetailDurationValue', 'sessionDetailDurationNote', 'Длительность', escapeHtml(formatDuration(session)), `Старт: ${renderLocalDateTime(session.started_at)}`, 'session-metric--warn')}
-        ${liveMetricCard('sessionDetailFinishCard', 'sessionDetailFinishValue', 'sessionDetailFinishNote', 'Завершение', session.finished_at ? renderLocalDateTime(session.finished_at) : 'В работе', session.finished_at ? 'Сессия завершена' : 'Журнал обновляется', 'session-metric--ok')}
+        ${metricCard('Статус', stripTags(statusBadge(session.status)), `Потоков: ${escapeHtml(session.concurrency || 1)}`, statusCardClass(session.status))}
+        ${metricCard('Прогресс', `${escapeHtml(progress.processed)} / ${escapeHtml(progress.total)}`, `Успешно: ${escapeHtml(progress.success)} • Ошибок: ${escapeHtml(progress.errors)}`, 'session-metric--blue')}
+        ${metricCard('Длительность', escapeHtml(formatDuration(session)), `Старт: ${renderLocalDateTime(session.started_at)}`, 'session-metric--warn')}
+        ${metricCard('Завершение', session.finished_at ? renderLocalDateTime(session.finished_at) : 'В работе', session.finished_at ? 'Сессия завершена' : 'Журнал обновляется', 'session-metric--ok')}
       </div>
 
       <div class="card">
@@ -105,17 +104,17 @@ export function renderParseSessionDetailPage({
         <div class="table-wrap">
           <table>
             <tbody>
-              <tr><td>ID</td><td id="sessionSummaryId">#${escapeHtml(session.id)}</td></tr>
-              <tr><td>Тип</td><td id="sessionSummaryType">${escapeHtml(typeLabel(session.type))}</td></tr>
-              <tr><td>Источник</td><td id="sessionSummarySource">${escapeHtml(sourceLabelText(session.trigger_source))}</td></tr>
-              <tr><td>Статус</td><td id="sessionSummaryStatus">${statusBadge(session.status)}</td></tr>
-              <tr><td>Всего товаров</td><td id="sessionSummaryTotal">${escapeHtml(formatCount(session.total_count))}</td></tr>
-              <tr><td>Успешно</td><td id="sessionSummarySuccess">${escapeHtml(formatCount(session.success_count))}</td></tr>
-              <tr><td>Ошибок</td><td id="sessionSummaryErrors">${escapeHtml(formatCount(session.error_count))}</td></tr>
-              <tr><td>Позиций найдено</td><td id="sessionSummaryPositions">${escapeHtml(formatCount(session.positions_found))}</td></tr>
-              <tr><td>Потоков</td><td id="sessionSummaryConcurrency">${escapeHtml(formatCount(session.concurrency || 1))}</td></tr>
-              <tr><td>Повторов</td><td id="sessionSummaryRetry">${escapeHtml(formatCount(session.retry_count))}</td></tr>
-              <tr><td>Сообщение</td><td id="sessionSummaryMessage">${escapeHtml(session.message || '—')}</td></tr>
+              <tr><td>ID</td><td>#${escapeHtml(session.id)}</td></tr>
+              <tr><td>Тип</td><td>${escapeHtml(typeLabel(session.type))}</td></tr>
+              <tr><td>Источник</td><td>${escapeHtml(sourceLabelText(session.trigger_source))}</td></tr>
+              <tr><td>Статус</td><td>${statusBadge(session.status)}</td></tr>
+              <tr><td>Всего товаров</td><td>${escapeHtml(formatCount(session.total_count))}</td></tr>
+              <tr><td>Успешно</td><td>${escapeHtml(formatCount(session.success_count))}</td></tr>
+              <tr><td>Ошибок</td><td>${escapeHtml(formatCount(session.error_count))}</td></tr>
+              <tr><td>Позиций найдено</td><td>${escapeHtml(formatCount(session.positions_found))}</td></tr>
+              <tr><td>Потоков</td><td>${escapeHtml(formatCount(session.concurrency || 1))}</td></tr>
+              <tr><td>Повторов</td><td>${escapeHtml(formatCount(session.retry_count))}</td></tr>
+              <tr><td>Сообщение</td><td>${escapeHtml(session.message || '—')}</td></tr>
             </tbody>
           </table>
         </div>
@@ -148,197 +147,11 @@ export function renderParseSessionDetailPage({
             <div class="card__subtitle">Сырые данные из поля <code>details</code> в БД.</div>
           </div>
         </div>
-        <pre id="sessionRawDetails" style="margin:0;padding:16px;white-space:pre-wrap;word-break:break-word;font-size:12px;background:#f7f9fc;border-top:1px solid var(--c-border)">${escapeHtml(rawDetails)}</pre>
+        <pre style="margin:0;padding:16px;white-space:pre-wrap;word-break:break-word;font-size:12px;background:#f7f9fc;border-top:1px solid var(--c-border)">${escapeHtml(rawDetails)}</pre>
       </div>
 
       ${renderDateTimeScript()}
-      <script>
-      (() => {
-        let liveSession = ${sessionPayload};
-        const liveSessionId = String(liveSession.id || '');
-
-        document.addEventListener('kaspi:parse_session_updated', (event) => {
-          const nextSession = event.detail || {};
-          if (String(nextSession.id || '') !== liveSessionId) return;
-          liveSession = nextSession;
-          applyLiveSession(nextSession);
-        });
-
-        function applyLiveSession(session) {
-          const details = parseSessionDetailsClient(session.details);
-          const upload = details.upload || null;
-          const processed = Number(session.success_count || 0) + Number(session.error_count || 0);
-          const progress = progressForClient(session, upload, processed);
-          setText('sessionDetailTitle', '#' + String(session.id || '—') + ' ' + typeLabelClient(session.type));
-          setText('sessionDetailMeta', sourceLabelClient(session.trigger_source) + ' • ' + formatLocalDateTimeClient(session.started_at));
-          setText('sessionDetailMessage', session.message || statusTextClient(session.status));
-
-          setMetricCard('sessionDetailStatusCard', 'sessionDetailStatusValue', 'sessionDetailStatusNote', statusCardClassClient(session.status), stripTagsClient(statusBadgeClient(session.status)), 'Потоков: ' + formatCountClient(session.concurrency || 1));
-          setMetricCard('sessionDetailProgressCard', 'sessionDetailProgressValue', 'sessionDetailProgressNote', 'session-metric--blue', progress.processed + ' / ' + progress.total, 'Успешно: ' + progress.success + ' • Ошибок: ' + progress.errors);
-          setMetricCard('sessionDetailDurationCard', 'sessionDetailDurationValue', 'sessionDetailDurationNote', 'session-metric--warn', formatDurationClient(session), 'Старт: ' + formatLocalDateTimeClient(session.started_at));
-          setMetricCard('sessionDetailFinishCard', 'sessionDetailFinishValue', 'sessionDetailFinishNote', 'session-metric--ok', session.finished_at ? formatLocalDateTimeClient(session.finished_at) : 'В работе', session.finished_at ? 'Сессия завершена' : 'Журнал обновляется');
-
-          setText('sessionSummaryType', typeLabelClient(session.type));
-          setText('sessionSummarySource', sourceLabelClient(session.trigger_source));
-          setHtml('sessionSummaryStatus', statusBadgeClient(session.status));
-          setText('sessionSummaryTotal', formatCountClient(session.total_count));
-          setText('sessionSummarySuccess', formatCountClient(session.success_count));
-          setText('sessionSummaryErrors', formatCountClient(session.error_count));
-          setText('sessionSummaryPositions', formatCountClient(session.positions_found));
-          setText('sessionSummaryConcurrency', formatCountClient(session.concurrency || 1));
-          setText('sessionSummaryRetry', formatCountClient(session.retry_count));
-          setText('sessionSummaryMessage', session.message || '—');
-          setText('sessionRawDetails', formatRawDetailsClient(session.details));
-        }
-
-        function setMetricCard(cardId, valueId, noteId, className, value, note) {
-          const card = document.getElementById(cardId);
-          if (card) {
-            card.className = 'session-metric ' + className;
-          }
-          setText(valueId, value);
-          setText(noteId, note);
-        }
-
-        function setText(id, value) {
-          const node = document.getElementById(id);
-          if (node) node.textContent = String(value ?? '');
-        }
-
-        function setHtml(id, value) {
-          const node = document.getElementById(id);
-          if (node) node.innerHTML = value;
-        }
-
-        function parseSessionDetailsClient(value) {
-          if (!value) return {};
-          if (typeof value === 'object') return value;
-          try {
-            return JSON.parse(value);
-          } catch {
-            return {};
-          }
-        }
-
-        function progressForClient(session, upload, processed) {
-          if (upload) {
-            const total = Number(upload.totalCount || session.total_count || 0);
-            const done = Number(upload.processedCount || processed || 0);
-            const errors = Number(upload.errorCount || session.error_count || 0);
-            return {
-              total: total || '—',
-              processed: done,
-              success: Math.max(0, done - errors),
-              errors,
-            };
-          }
-          return {
-            total: Number(session.total_count || 0) || '—',
-            processed,
-            success: Number(session.success_count || 0),
-            errors: Number(session.error_count || 0),
-          };
-        }
-
-        function typeLabelClient(type) {
-          const typeMap = {
-            single_product: 'Один товар',
-            all_products: 'Все товары',
-            all_products_api: 'Все товары API',
-            full_parse: 'Сформировать карточку',
-            light_parse: 'Расчет цены',
-            selected_products: 'Выбранные товары',
-            auto_pricing: 'Расчет цены',
-            kaspi_upload: 'Загрузка в Kaspi',
-            kaspi_download: 'Загрузка с Kaspi',
-          };
-          return typeMap[type] || type || 'Сессия';
-        }
-
-        function sourceLabelClient(source) {
-          if (source === 'auto') return 'Авто';
-          if (source === 'import') return 'Импорт';
-          return 'Ручной';
-        }
-
-        function statusTextClient(status) {
-          const map = {
-            success: 'Завершено успешно',
-            running: 'Выполняется',
-            partial: 'Завершено частично',
-            aborted: 'Прервано',
-            error: 'Ошибка',
-          };
-          return map[status] || 'Сессия';
-        }
-
-        function statusBadgeClient(status) {
-          if (status === 'success') return '<span class="badge badge--green">OK</span>';
-          if (status === 'running') return '<span class="badge badge--blue">Идет</span>';
-          if (status === 'partial') return '<span class="badge" style="background:#fff8e1;color:#f57f17">Частично</span>';
-          if (status === 'aborted') return '<span class="badge badge--gray">Прервано</span>';
-          return '<span class="badge badge--red">Ошибка</span>';
-        }
-
-        function statusCardClassClient(status) {
-          if (status === 'success') return 'session-metric--ok';
-          if (status === 'running') return 'session-metric--blue';
-          if (status === 'partial' || status === 'aborted') return 'session-metric--warn';
-          return 'session-metric--danger';
-        }
-
-        function formatLocalDateTimeClient(value) {
-          if (!value) return '—';
-          const date = new Date(normalizeDateValueClient(value));
-          if (Number.isNaN(date.getTime())) return '—';
-          return new Intl.DateTimeFormat('ru-RU', {
-            dateStyle: 'short',
-            timeStyle: 'short',
-            timeZone: 'Asia/Almaty',
-          }).format(date);
-        }
-
-        function normalizeDateValueClient(value) {
-          const raw = String(value ?? '').trim();
-          if (!raw) return raw;
-          if (/^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?$/.test(raw)) return raw.replace(' ', 'T') + 'Z';
-          if (/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?$/.test(raw)) return raw + 'Z';
-          return raw;
-        }
-
-        function formatCountClient(value) {
-          const number = Number(value || 0);
-          return Number.isFinite(number) ? String(number) : '0';
-        }
-
-        function formatDurationClient(session) {
-          const startedAt = Date.parse(normalizeDateValueClient(session.started_at));
-          const finishedAt = session.finished_at ? Date.parse(normalizeDateValueClient(session.finished_at)) : Date.now();
-          if (!Number.isFinite(startedAt) || !Number.isFinite(finishedAt)) return '—';
-          const totalSeconds = Math.max(0, Math.round((finishedAt - startedAt) / 1000));
-          if (totalSeconds < 60) return totalSeconds + ' сек';
-          const minutes = Math.floor(totalSeconds / 60);
-          const seconds = totalSeconds % 60;
-          if (minutes < 60) return minutes + ' мин ' + seconds + ' сек';
-          const hours = Math.floor(minutes / 60);
-          return hours + ' ч ' + (minutes % 60) + ' мин';
-        }
-
-        function formatRawDetailsClient(value) {
-          if (!value) return '—';
-          if (typeof value === 'string') return value;
-          try {
-            return JSON.stringify(value, null, 2);
-          } catch {
-            return String(value);
-          }
-        }
-
-        function stripTagsClient(value) {
-          return String(value || '').replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').trim();
-        }
-      })();
-      </script>
+      ${session.status === 'running' ? `<script>setTimeout(() => location.reload(), 10000);</script>` : ''}
     `,
   });
 }
@@ -614,16 +427,6 @@ function metricCard(label, value, note, modifier = '') {
       <div class="session-metric__label">${escapeHtml(label)}</div>
       <div class="session-metric__value">${escapeHtml(value)}</div>
       <div class="session-metric__note">${escapeHtml(note)}</div>
-    </div>
-  `;
-}
-
-function liveMetricCard(cardId, valueId, noteId, label, value, note, modifier = '') {
-  return `
-    <div class="session-metric ${modifier}" id="${escapeHtml(cardId)}">
-      <div class="session-metric__label">${escapeHtml(label)}</div>
-      <div class="session-metric__value" id="${escapeHtml(valueId)}">${escapeHtml(value)}</div>
-      <div class="session-metric__note" id="${escapeHtml(noteId)}">${escapeHtml(note)}</div>
     </div>
   `;
 }

@@ -172,20 +172,8 @@ router.post('/products/parse-all', (req, res) => {
       logPrefix: 'Сформировать карточки всех товаров',
     });
 
-    const message = `Формирование карточек всех товаров запущено. Сессия #${session.id}.`;
-    if (sendActionSuccess(req, res, {
-      message,
-      redirectTo: '/panel/products',
-      status: 202,
-      data: { sessionId: session.id },
-    })) {
-      return;
-    }
-    res.redirect(303, '/panel/products?message=' + encodeURIComponent(message));
+    res.redirect(303, '/panel/products?message=' + encodeURIComponent(`Формирование карточек всех товаров запущено. Сессия #${session.id}.`));
   } catch (error) {
-    if (sendActionError(req, res, error, { redirectTo: '/panel/products' })) {
-      return;
-    }
     res.redirect(303, '/panel/products?error=' + encodeURIComponent(error.message));
   }
 });
@@ -212,20 +200,8 @@ router.post('/products/bulk/parse', (req, res) => {
       logPrefix: 'Сформировать карточки выбранных товаров',
     });
 
-    const message = `Формирование карточек выбранных товаров запущено. Сессия #${session.id}.`;
-    if (sendActionSuccess(req, res, {
-      message,
-      redirectTo: '/panel/products',
-      status: 202,
-      data: { sessionId: session.id, count: products.length },
-    })) {
-      return;
-    }
-    res.redirect(303, `/panel/products?message=${encodeURIComponent(message)}`);
+    res.redirect(303, `/panel/products?message=${encodeURIComponent(`Формирование карточек выбранных товаров запущено. Сессия #${session.id}.`)}`);
   } catch (error) {
-    if (sendActionError(req, res, error, { redirectTo: '/panel/products' })) {
-      return;
-    }
     res.redirect(303, `/panel/products?error=${encodeURIComponent(error.message)}`);
   }
 });
@@ -267,20 +243,8 @@ router.post('/products/bulk/light-parse', (req, res) => {
       logRuntime('auto_pricing', 'error', `Ручной расчет цены завершился ошибкой: ${error.message}`);
     });
 
-    const message = `Расчет цены запущен: ${products.length} товаров. Смотрите сессии.`;
-    if (sendActionSuccess(req, res, {
-      message,
-      redirectTo: '/panel/products',
-      status: 202,
-      data: { count: products.length },
-    })) {
-      return;
-    }
-    res.redirect(303, `/panel/products?message=${encodeURIComponent(message)}`);
+    res.redirect(303, `/panel/products?message=${encodeURIComponent(`Расчет цены запущен: ${products.length} товаров. Смотрите сессии.`)}`);
   } catch (error) {
-    if (sendActionError(req, res, error, { redirectTo: '/panel/products' })) {
-      return;
-    }
     res.redirect(303, `/panel/products?error=${encodeURIComponent(error.message)}`);
   }
 });
@@ -340,18 +304,8 @@ router.post('/products/bulk/delete', async (req, res) => {
 
     await generateAndSaveXml().catch(() => { });
     logRuntime('product_update', 'success', `Удалено товаров: ${deleted}`, { skus, deleted });
-    if (sendActionSuccess(req, res, {
-      message: `Удалено ${deleted} товаров`,
-      redirectTo: '/panel/products',
-      data: { deleted, skus },
-    })) {
-      return;
-    }
     res.redirect(`/panel/products?message=${encodeURIComponent(`Удалено ${deleted} товаров`)}`);
   } catch (error) {
-    if (sendActionError(req, res, error, { redirectTo: '/panel/products' })) {
-      return;
-    }
     res.redirect(`/panel/products?error=${encodeURIComponent(error.message)}`);
   }
 });
@@ -413,56 +367,14 @@ router.post('/products/:sku', async (req, res) => {
     // Regenerate XML
     await generateAndSaveXml().catch(() => { });
     logRuntime('product_update', 'success', `Товар ${sku} сохранен`);
-    if (sendActionSuccess(req, res, {
-      message: 'Товар сохранен',
-      redirectTo: `/panel/products/${encodeURIComponent(sku)}`,
-      data: { sku },
-    })) {
-      return;
-    }
     res.redirect(`/panel/products/${encodeURIComponent(sku)}?message=${encodeURIComponent('Товар сохранен')}`);
   } catch (error) {
     logRuntime('product_update', 'error', `Ошибка сохранения ${sku}: ${error.message}`);
-    if (sendActionError(req, res, error, {
-      redirectTo: `/panel/products/${encodeURIComponent(sku)}`,
-      data: { sku },
-    })) {
-      return;
-    }
     res.redirect(`/panel/products/${encodeURIComponent(sku)}?error=${encodeURIComponent(error.message)}`);
   }
 });
 
 router.post('/products/:sku/parse', async (req, res) => {
-  if (wantsJsonResponse(req)) {
-    try {
-      const product = getProduct(req.params.sku);
-      if (!product) {
-        throw new Error(`Товар ${req.params.sku} не найден.`);
-      }
-      const session = startBackgroundParseSession({
-        products: [product],
-        type: 'single_product',
-        logPrefix: `Сформировать карточку: ${req.params.sku}`,
-      });
-      res.status(202).json({
-        ok: true,
-        message: `Формирование карточки запущено. Сессия #${session.id}.`,
-        redirectTo: `/panel/products/${encodeURIComponent(req.params.sku)}`,
-        sessionId: session.id,
-        sku: req.params.sku,
-      });
-      return;
-    } catch (error) {
-      if (sendActionError(req, res, error, {
-        redirectTo: `/panel/products/${encodeURIComponent(req.params.sku)}`,
-        data: { sku: req.params.sku },
-      })) {
-        return;
-      }
-    }
-  }
-
   let session = null;
   try {
     if (isFullParseRunning()) {
@@ -523,13 +435,6 @@ router.post('/products/:sku/parse', async (req, res) => {
         }],
       },
     });
-    if (sendActionSuccess(req, res, {
-      message: 'Карточка товара обновлена',
-      redirectTo: `/panel/products/${encodeURIComponent(req.params.sku)}`,
-      data: { sku: req.params.sku, sessionId: session.id },
-    })) {
-      return;
-    }
     res.redirect(`/panel/products/${encodeURIComponent(req.params.sku)}?message=${encodeURIComponent('Карточка товара обновлена')}`);
   } catch (error) {
     if (session) {
@@ -560,12 +465,6 @@ router.post('/products/:sku/parse', async (req, res) => {
       });
     }
     logRuntime('product_parse', 'error', `Ошибка парсинга ${req.params.sku}: ${error.message}`);
-    if (sendActionError(req, res, error, {
-      redirectTo: `/panel/products/${encodeURIComponent(req.params.sku)}`,
-      data: { sku: req.params.sku, sessionId: session?.id || null },
-    })) {
-      return;
-    }
     res.redirect(`/panel/products/${encodeURIComponent(req.params.sku)}?error=${encodeURIComponent(error.message)}`);
   }
 });
@@ -589,21 +488,8 @@ router.post('/products/:sku/delete', async (req, res) => {
       throw new Error(`Товар ${req.params.sku} не найден или уже удален.`);
     }
     await generateAndSaveXml().catch(() => { });
-    if (sendActionSuccess(req, res, {
-      message: `Товар ${req.params.sku} удален`,
-      redirectTo: '/panel/products',
-      data: { sku: req.params.sku, deleted: 1 },
-    })) {
-      return;
-    }
     res.redirect(`/panel/products?message=${encodeURIComponent(`Товар ${req.params.sku} удален`)}`);
   } catch (error) {
-    if (sendActionError(req, res, error, {
-      redirectTo: '/panel/products',
-      data: { sku: req.params.sku },
-    })) {
-      return;
-    }
     res.redirect(`/panel/products?error=${encodeURIComponent(error.message)}`);
   }
 });
@@ -633,21 +519,8 @@ router.post('/products/:sku/auto-price', async (req, res) => {
     const message = result.updated
       ? `SKU ${result.sku}: цена ${result.oldPrice} → ${result.newPrice}`
       : `SKU ${result.sku}: цена уже ${result.newPrice}`;
-    if (sendActionSuccess(req, res, {
-      message,
-      redirectTo: `/panel/products/${encodeURIComponent(req.params.sku)}`,
-      data: { sku: req.params.sku, result },
-    })) {
-      return;
-    }
     res.redirect(`/panel/products/${encodeURIComponent(req.params.sku)}?message=${encodeURIComponent(message)}`);
   } catch (error) {
-    if (sendActionError(req, res, error, {
-      redirectTo: `/panel/products/${encodeURIComponent(req.params.sku)}`,
-      data: { sku: req.params.sku },
-    })) {
-      return;
-    }
     res.redirect(`/panel/products/${encodeURIComponent(req.params.sku)}?error=${encodeURIComponent(error.message)}`);
   }
 });
@@ -658,22 +531,8 @@ router.post('/products/:sku/toggle-available', async (req, res) => {
     if (!product) throw new Error('Товар не найден');
     upsertProduct({ sku: req.params.sku, available: product.available ? 0 : 1 });
     await generateAndSaveXml().catch(() => { });
-    const message = product.available ? 'Снят с продажи' : 'Выставлен в продажу';
-    if (sendActionSuccess(req, res, {
-      message,
-      redirectTo: `/panel/products/${encodeURIComponent(req.params.sku)}`,
-      data: { sku: req.params.sku, available: product.available ? 0 : 1 },
-    })) {
-      return;
-    }
     res.redirect(`/panel/products/${encodeURIComponent(req.params.sku)}?message=${encodeURIComponent(product.available ? 'Снят с продажи' : 'Выставлен в продажу')}`);
   } catch (error) {
-    if (sendActionError(req, res, error, {
-      redirectTo: `/panel/products/${encodeURIComponent(req.params.sku)}`,
-      data: { sku: req.params.sku },
-    })) {
-      return;
-    }
     res.redirect(`/panel/products/${encodeURIComponent(req.params.sku)}?error=${encodeURIComponent(error.message)}`);
   }
 });
@@ -712,18 +571,8 @@ router.post('/products/bulk/update', async (req, res) => {
       recalculateUploadPriceForSku({ sku });
     }
     await generateAndSaveXml().catch(() => { });
-    if (sendActionSuccess(req, res, {
-      message: `Обновлено ${skus.length} товаров`,
-      redirectTo: '/panel/products',
-      data: { skus, updates },
-    })) {
-      return;
-    }
     res.redirect(`/panel/products?message=${encodeURIComponent(`Обновлено ${skus.length} товаров`)}`);
   } catch (error) {
-    if (sendActionError(req, res, error, { redirectTo: '/panel/products' })) {
-      return;
-    }
     res.redirect(`/panel/products?error=${encodeURIComponent(error.message)}`);
   }
 });
@@ -871,22 +720,8 @@ router.post('/kaspi/download', async (req, res) => {
     task.promise.catch((error) => {
       logRuntime('pull_kaspi', 'error', `Фоновая загрузка товаров из Kaspi завершилась ошибкой: ${error.message}`);
     });
-    const redirectTo = returnBackPath(req, '/panel/products');
-    const message = `Загрузка товаров из Kaspi запущена. Сессия #${task.session.id}.`;
-    if (sendActionSuccess(req, res, {
-      message,
-      redirectTo,
-      status: 202,
-      data: { sessionId: task.session.id },
-    })) {
-      return;
-    }
-    res.redirect(303, `${redirectTo}?message=${encodeURIComponent(message)}`);
+    res.redirect(303, `${returnBackPath(req, '/panel/products')}?message=${encodeURIComponent(`Загрузка товаров из Kaspi запущена. Сессия #${task.session.id}.`)}`);
   } catch (error) {
-    const redirectTo = returnBackPath(req, '/panel/');
-    if (sendActionError(req, res, error, { redirectTo })) {
-      return;
-    }
     res.redirect(303, `${returnBackPath(req, '/panel/')}?error=${encodeURIComponent(error.message)}`);
   }
 });
@@ -900,21 +735,8 @@ router.post('/kaspi/upload', async (req, res) => {
     task.promise.catch((error) => {
       logRuntime('push_kaspi', 'error', `Фоновая загрузка в Kaspi завершилась ошибкой: ${error.message}`);
     });
-    const redirectTo = returnBackPath(req, '/panel/');
-    const message = `Загрузка в Kaspi запущена. Сессия #${task.session.id}.`;
-    if (sendActionSuccess(req, res, {
-      message,
-      redirectTo,
-      status: 202,
-      data: { sessionId: task.session.id },
-    })) {
-      return;
-    }
-    res.redirect(303, `${redirectTo}?message=${encodeURIComponent(message)}`);
+    res.redirect(303, `${returnBackPath(req, '/panel/')}?message=${encodeURIComponent(`Загрузка в Kaspi запущена. Сессия #${task.session.id}.`)}`);
   } catch (error) {
-    if (sendActionError(req, res, error, { redirectTo: '/panel/' })) {
-      return;
-    }
     res.redirect(303, `/panel/?error=${encodeURIComponent(error.message)}`);
   }
 });
@@ -946,21 +768,8 @@ router.post('/auto-pricing/run', (req, res) => {
         logRuntime('auto_pricing', 'error', `Ручной расчет цены завершился ошибкой: ${error.message}`);
       });
 
-    const redirectTo = autoPricingReturnPath(req);
-    const message = 'Расчет цены запущен. Прогресс смотрите в сессиях.';
-    if (sendActionSuccess(req, res, {
-      message,
-      redirectTo,
-      status: 202,
-    })) {
-      return;
-    }
-    res.redirect(303, `${redirectTo}?message=${encodeURIComponent(message)}`);
+    res.redirect(303, `${autoPricingReturnPath(req)}?message=${encodeURIComponent('Расчет цены запущен. Прогресс смотрите в сессиях.')}`);
   } catch (error) {
-    const redirectTo = autoPricingReturnPath(req);
-    if (sendActionError(req, res, error, { redirectTo })) {
-      return;
-    }
     res.redirect(303, `${autoPricingReturnPath(req)}?error=${encodeURIComponent(error.message)}`);
   }
 });
@@ -1185,9 +994,6 @@ function queueNewProductCardBuilds(importedSkus, {
       importedCount: 0,
       queuedCount: 0,
       started: false,
-      scheduled: false,
-      disabled: false,
-      nextRunAt: null,
       session: null,
       sourceLabel,
     };
@@ -1204,9 +1010,6 @@ function queueNewProductCardBuilds(importedSkus, {
     importedCount: products.length,
     queuedCount: queueResult.queuedCount || 0,
     started: Boolean(queueResult.started),
-    scheduled: Boolean(queueResult.scheduled),
-    disabled: Boolean(queueResult.disabled),
-    nextRunAt: queueResult.nextRunAt || null,
     session: queueResult.session || null,
     sourceLabel,
   };
@@ -1219,14 +1022,6 @@ function formatCardBuildMessage(cardBuildInfo) {
 
   if (cardBuildInfo.started && cardBuildInfo.session) {
     return `Для новых товаров из ${cardBuildInfo.sourceLabel} сразу запущено формирование карточек. Сессия #${cardBuildInfo.session.id}.`;
-  }
-
-  if (cardBuildInfo.disabled) {
-    return `Автоформирование сейчас выключено, поэтому новые товары из ${cardBuildInfo.sourceLabel} не запускались автоматически.`;
-  }
-
-  if (cardBuildInfo.scheduled && cardBuildInfo.queuedCount) {
-    return `Новые товары из ${cardBuildInfo.sourceLabel} поставлены в очередь и будут сформированы по расписанию: ${cardBuildInfo.queuedCount}.`;
   }
 
   if (cardBuildInfo.queuedCount) {
@@ -1416,48 +1211,6 @@ function returnBackPath(req, fallback) {
   if (referer.includes('/panel/parse-sessions')) return '/panel/history?tab=sessions';
   if (referer.includes('/panel/')) return '/panel/';
   return fallback;
-}
-
-function wantsJsonResponse(req) {
-  const accept = String(req.get('accept') || '');
-  return req.get('x-kaspi-async') === '1' || accept.includes('application/json');
-}
-
-function sendActionSuccess(req, res, {
-  message = '',
-  redirectTo = '',
-  status = 200,
-  data = {},
-} = {}) {
-  if (!wantsJsonResponse(req)) {
-    return false;
-  }
-
-  res.status(status).json({
-    ok: true,
-    message,
-    redirectTo,
-    ...(data && typeof data === 'object' ? data : {}),
-  });
-  return true;
-}
-
-function sendActionError(req, res, error, {
-  redirectTo = '',
-  status = 400,
-  data = {},
-} = {}) {
-  if (!wantsJsonResponse(req)) {
-    return false;
-  }
-
-  res.status(status).json({
-    ok: false,
-    error: error instanceof Error ? error.message : String(error),
-    redirectTo,
-    ...(data && typeof data === 'object' ? data : {}),
-  });
-  return true;
 }
 
 export default router;
