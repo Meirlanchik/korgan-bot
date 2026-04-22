@@ -10,9 +10,10 @@ const YES_VALUES = new Set(['yes', 'y', 'true', 'да', '1', '+']);
 const NO_VALUES = new Set(['no', 'n', 'false', 'нет', '0', '-']);
 
 export function defaultConfigFromEnv() {
+  const merchantId = process.env.KASPI_MERCHANT_ID || 'CompanyID';
   return {
-    company: process.env.KASPI_COMPANY_NAME || 'CompanyName',
-    merchantId: process.env.KASPI_MERCHANT_ID || 'CompanyID',
+    company: merchantId,
+    merchantId,
     storeIds: splitList(process.env.KASPI_STORE_IDS || 'PP1,PP2,PP3,PP4,PP5'),
   };
 }
@@ -23,7 +24,10 @@ export async function processPriceList(filePath, originalName, config) {
   if (extension === '.xml') {
     const xml = await fs.readFile(filePath, 'utf8');
     const warnings = [];
-    const catalog = normalizeCatalog(parseKaspiCatalog(xml), {
+    const catalog = normalizeCatalog(parseKaspiCatalog(xml, {
+      modelFallbackFromSku: true,
+      warnings,
+    }), {
       skipDuplicateSkus: true,
       warnings,
     });
@@ -540,7 +544,7 @@ function xmlOfferToProduct(offer, options = {}) {
   const sku = clean(offer['@_sku']);
   let model = textValue(offer.model);
 
-  if (isKaspiCabinetPullTolerance(options) && !model && /^[A-Za-z0-9_-]{1,20}$/.test(sku)) {
+  if (shouldFallbackEmptyModelFromSku(options) && !model && /^[A-Za-z0-9_-]{1,20}$/.test(sku)) {
     model = sku;
     registerKaspiCatalogIssue(options, {
       type: 'model_fallback',
@@ -594,6 +598,10 @@ function normalizeSku(value) {
 
 function isKaspiCabinetPullTolerance(options) {
   return options?.tolerant === true && options?.source === 'kaspi_cabinet_pull';
+}
+
+function shouldFallbackEmptyModelFromSku(options) {
+  return options?.modelFallbackFromSku === true || isKaspiCabinetPullTolerance(options);
 }
 
 function registerKaspiCatalogIssue(options, issue) {

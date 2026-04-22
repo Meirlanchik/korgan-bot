@@ -21,6 +21,8 @@ const HISTORY_XML_POLL_MS = 10_000;
 const SOFT_NETWORK_IDLE_TIMEOUT_MS = 2_000;
 const MERCHANT_EXPORT_STATUS_POLL_MS = 2_000;
 const MERCHANT_EXPORT_PROGRESS_LOG_MS = 15_000;
+const PERSISTENT_CONTEXT_RETRY_MS = 1_250;
+const PERSISTENT_CONTEXT_RETRY_ATTEMPTS = 4;
 const MERCHANT_EXPORT_API_ORIGIN = 'https://mc.shop.kaspi.kz';
 const MERCHANT_EXPORT_FILE_BASE_URL = `${MERCHANT_EXPORT_API_ORIGIN}/image/processor/merchant/img/cnt/m/o`;
 const persistentSessionLocks = new Map();
@@ -64,19 +66,50 @@ async function withPersistentKaspiContext(config, onMessage, task) {
   let context;
 
   try {
-    context = await chromium.launchPersistentContext(config.sessionDir, {
-      headless: config.headless,
-      executablePath: config.browserPath,
-      acceptDownloads: true,
-      viewport: { width: 1440, height: 1000 },
-      args: ['--no-sandbox', '--disable-dev-shm-usage'],
-    });
+    context = await launchPersistentContextWithRetry(config, onMessage);
 
     return await task(context);
   } finally {
     await context?.close().catch(() => {});
     release();
   }
+}
+
+async function launchPersistentContextWithRetry(config, onMessage = async () => {}) {
+  let attempt = 0;
+  let lastError;
+
+  while (attempt < PERSISTENT_CONTEXT_RETRY_ATTEMPTS) {
+    try {
+      return await chromium.launchPersistentContext(config.sessionDir, {
+        headless: config.headless,
+        executablePath: config.browserPath,
+        acceptDownloads: true,
+        viewport: { width: 1440, height: 1000 },
+        args: ['--no-sandbox', '--disable-dev-shm-usage'],
+      });
+    } catch (error) {
+      lastError = error;
+      attempt += 1;
+
+      if (!isProcessSingletonError(error) || attempt >= PERSISTENT_CONTEXT_RETRY_ATTEMPTS) {
+        throw error;
+      }
+
+      await onMessage(`Профиль браузера Kaspi еще освобождается, повторяю запуск (${attempt + 1}/${PERSISTENT_CONTEXT_RETRY_ATTEMPTS}).`);
+      await fs.rm(path.join(config.sessionDir, 'SingletonLock'), { force: true }).catch(() => {});
+      await fs.rm(path.join(config.sessionDir, 'SingletonSocket'), { force: true, recursive: true }).catch(() => {});
+      await fs.rm(path.join(config.sessionDir, 'SingletonCookie'), { force: true }).catch(() => {});
+      await delay(PERSISTENT_CONTEXT_RETRY_MS * attempt);
+    }
+  }
+
+  throw lastError;
+}
+
+function isProcessSingletonError(error) {
+  const message = error instanceof Error ? error.message : String(error || '');
+  return message.includes('ProcessSingleton') || message.includes('SingletonLock');
 }
 
 export async function downloadKaspiPriceList({
@@ -381,7 +414,7 @@ export async function resolveKaspiProductCardFromMerchantCabinet({
   }
 
   return withPersistentKaspiContext(config, onMessage, async (context) => {
-    await onMessage(`Открываю товар ${normalizedArticle} в кабинете продавца Kaspi.`);
+    await onMessage(`Ищу товар ${normalizedArticle} в кабинете продавца Kaspi.`);
 
     const page = context.pages()[0] || await context.newPage();
     page.setDefaultTimeout(config.timeoutMs);
@@ -390,16 +423,12 @@ export async function resolveKaspiProductCardFromMerchantCabinet({
       await page.goto(config.loginUrl, { waitUntil: 'domcontentloaded' });
       await maybeLogin(page, config, onMessage, requestOtp);
 
-      const merchantUrl = `https://kaspi.kz/mc/#/products/${encodeURIComponent(normalizedArticle)}`;
-      await page.goto(merchantUrl, { waitUntil: 'domcontentloaded' });
-      await waitForOptionalNetworkIdle(page);
-
-      const productLink = await resolveMerchantProductLink(page, config);
-      if (!productLink) {
+      const resolvedProduct = await resolveMerchantProductLinkFromCabinetSearch(page, config, normalizedArticle, onMessage);
+      if (!resolvedProduct?.productLink) {
         throw new Error(`В кабинете Kaspi не нашел ссылку «Посмотреть на Kaspi.kz» для артикула ${normalizedArticle}.`);
       }
 
-      const normalizedShopLink = normalizeKaspiShopLink(productLink);
+      const normalizedShopLink = normalizeKaspiShopLink(resolvedProduct.productLink);
       const kaspiId = extractKaspiIdFromHref(normalizedShopLink);
       if (!kaspiId) {
         throw new Error(`Ссылка товара из кабинета Kaspi не содержит код товара для артикула ${normalizedArticle}.`);
@@ -411,8 +440,94 @@ export async function resolveKaspiProductCardFromMerchantCabinet({
         article: normalizedArticle,
         kaspiId,
         shopLink: normalizedShopLink.replace(/^https?:\/\/kaspi\.kz/i, ''),
-        merchantUrl,
+        merchantUrl: resolvedProduct.merchantUrl,
       };
+    } catch (error) {
+      await saveDebugSnapshot(page, config).catch(() => {});
+      throw error;
+    }
+  });
+}
+
+export async function resolveKaspiProductCardsFromMerchantCabinetBatch({
+  articles = [],
+  downloadDir,
+  sessionDir,
+  onMessage = async () => {},
+  requestOtp = async () => null,
+} = {}) {
+  const normalizedArticles = [...new Set(
+    (Array.isArray(articles) ? articles : [articles])
+      .map((article) => normalizeText(article))
+      .filter(Boolean),
+  )];
+
+  if (!normalizedArticles.length) {
+    return { items: [] };
+  }
+
+  const config = readConfig(downloadDir, sessionDir);
+  await fs.mkdir(config.downloadDir, { recursive: true });
+  await fs.mkdir(config.sessionDir, { recursive: true });
+
+  if (!config.login || !config.password) {
+    throw new Error('Заполни KASPI_CABINET_EMAIL или KASPI_CABINET_LOGIN, а также KASPI_CABINET_PASSWORD в .env.');
+  }
+
+  return withPersistentKaspiContext(config, onMessage, async (context) => {
+    const page = context.pages()[0] || await context.newPage();
+    page.setDefaultTimeout(config.timeoutMs);
+
+    try {
+      await onMessage(`Открываю кабинет Kaspi для пакетного поиска ${normalizedArticles.length} товаров.`);
+      await page.goto(config.loginUrl, { waitUntil: 'domcontentloaded' });
+      await maybeLogin(page, config, onMessage, requestOtp);
+
+      const items = [];
+      for (const [index, article] of normalizedArticles.entries()) {
+        const progressLabel = `[ЛК ${index + 1}/${normalizedArticles.length}]`;
+        try {
+          await onMessage(`${progressLabel} Ищу артикул ${article}.`);
+          const resolvedProduct = await resolveMerchantProductLinkFromCabinetSearch(
+            page,
+            config,
+            article,
+            async (message) => onMessage(`${progressLabel} ${message}`),
+          );
+
+          if (!resolvedProduct?.productLink) {
+            items.push({
+              article,
+              error: `В кабинете Kaspi не нашел ссылку «Посмотреть на Kaspi.kz» для артикула ${article}.`,
+            });
+            continue;
+          }
+
+          const normalizedShopLink = normalizeKaspiShopLink(resolvedProduct.productLink);
+          const kaspiId = extractKaspiIdFromHref(normalizedShopLink);
+          if (!kaspiId) {
+            items.push({
+              article,
+              error: `Ссылка товара из кабинета Kaspi не содержит код товара для артикула ${article}.`,
+            });
+            continue;
+          }
+
+          items.push({
+            article,
+            kaspiId,
+            shopLink: normalizedShopLink.replace(/^https?:\/\/kaspi\.kz/i, ''),
+            merchantUrl: resolvedProduct.merchantUrl,
+          });
+        } catch (error) {
+          items.push({
+            article,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
+      return { items };
     } catch (error) {
       await saveDebugSnapshot(page, config).catch(() => {});
       throw error;
@@ -816,6 +931,122 @@ async function resolveMerchantProductLink(page, config) {
   const popupUrl = popup.url();
   await popup.close().catch(() => {});
   return popupUrl;
+}
+
+async function resolveMerchantProductLinkFromCabinetSearch(page, config, article, onMessage) {
+  const attempts = [
+    {
+      label: 'в продаже',
+      merchantUrl: `${config.productsUrl}?status=active&search=${encodeURIComponent(article)}`,
+      allowSearchRowNavigation: true,
+    },
+    {
+      label: 'в архиве',
+      merchantUrl: `${config.productsUrl}?status=archive&search=${encodeURIComponent(article)}`,
+      allowSearchRowNavigation: true,
+    },
+    {
+      label: 'по прямой карточке товара',
+      merchantUrl: `https://kaspi.kz/mc/#/products/${encodeURIComponent(article)}`,
+      allowSearchRowNavigation: false,
+    },
+  ];
+
+  for (const attempt of attempts) {
+    await onMessage(`Открываю поиск товара ${article} ${attempt.label} в кабинете продавца Kaspi.`);
+    await page.goto(attempt.merchantUrl, { waitUntil: 'domcontentloaded' });
+    await waitForOptionalNetworkIdle(page);
+    await waitForAnyVisible(page, [
+      '#products-table tbody tr',
+      '.table-wrapper tbody tr',
+      'text=Ничего не найдено',
+      'text=Нет товаров',
+      ...config.merchantViewSelectors,
+      ...config.merchantProductSelectors,
+    ], 15_000).catch(() => {});
+
+    const directProductLink = await resolveMerchantProductLink(page, config);
+    if (directProductLink) {
+      return {
+        productLink: directProductLink,
+        merchantUrl: page.url(),
+      };
+    }
+
+    if (!attempt.allowSearchRowNavigation) {
+      continue;
+    }
+
+    const detailPageUrl = await resolveMerchantProductPageUrlFromSearch(page, article);
+    if (!detailPageUrl) {
+      continue;
+    }
+
+    await onMessage(`Нашел строку товара ${article} в кабинете, открываю карточку товара.`);
+    await page.goto(detailPageUrl, { waitUntil: 'domcontentloaded' });
+    await waitForOptionalNetworkIdle(page);
+
+    const nestedProductLink = await resolveMerchantProductLink(page, config);
+    if (nestedProductLink) {
+      return {
+        productLink: nestedProductLink,
+        merchantUrl: page.url(),
+      };
+    }
+  }
+
+  return null;
+}
+
+async function resolveMerchantProductPageUrlFromSearch(page, article) {
+  const normalizedArticle = normalizeText(article);
+  if (!normalizedArticle) {
+    return '';
+  }
+
+  const result = await page.evaluate((expectedArticle) => {
+    const normalizeValue = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+    const rows = Array.from(document.querySelectorAll('#products-table tbody tr, .table-wrapper tbody tr'));
+
+    for (const row of rows) {
+      const rowText = normalizeValue(row.innerText || row.textContent || '');
+      if (!rowText || !rowText.includes(expectedArticle)) {
+        continue;
+      }
+
+      const links = Array.from(row.querySelectorAll('a[href], [href]'));
+      const shopLink = links.find((node) => /kaspi\.kz\/shop\/p\/|\/shop\/p\//i.test(node.getAttribute('href') || ''));
+      if (shopLink?.getAttribute('href')) {
+        return {
+          kind: 'shop',
+          href: shopLink.getAttribute('href'),
+        };
+      }
+
+      const detailLink = links.find((node) => {
+        const href = String(node.getAttribute('href') || '');
+        return /#\/products\/|\/mc\/#\/products\/|^\/products\/|^products\//i.test(href);
+      });
+      if (detailLink?.getAttribute('href')) {
+        return {
+          kind: 'detail',
+          href: detailLink.getAttribute('href'),
+        };
+      }
+    }
+
+    return null;
+  }, normalizedArticle).catch(() => null);
+
+  if (!result?.href) {
+    return '';
+  }
+
+  if (result.kind === 'shop') {
+    return normalizeKaspiShopLink(result.href);
+  }
+
+  return normalizeMerchantCabinetUrl(page.url(), result.href);
 }
 
 async function readMerchantProductsTable(page, status) {
@@ -1717,6 +1948,19 @@ function toAbsoluteKaspiUrl(link) {
   if (/^https?:\/\//i.test(value)) return value;
   if (value.startsWith('/')) return `https://kaspi.kz${value}`;
   return value;
+}
+
+function normalizeMerchantCabinetUrl(currentUrl, href) {
+  const value = String(href || '').trim();
+  if (!value) return '';
+  if (/^https?:\/\//i.test(value)) return value;
+  if (value.startsWith('/mc/#')) return `https://kaspi.kz${value}`;
+  if (value.startsWith('#')) {
+    return new URL(value, currentUrl || 'https://kaspi.kz/mc/#/products').toString();
+  }
+  if (value.startsWith('/products')) return `https://kaspi.kz/mc/#${value}`;
+  if (value.startsWith('products/')) return `https://kaspi.kz/mc/#/${value}`;
+  return new URL(value, currentUrl || 'https://kaspi.kz/mc/#/products').toString();
 }
 
 function escapeRegExp(value) {

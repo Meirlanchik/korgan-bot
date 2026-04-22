@@ -36,40 +36,36 @@ export function renderProductDetailPage({
             ? `Сформирована ${formatDateTime(product.last_parsed_at, { dateStyle: 'short', timeStyle: 'short' })}`
             : 'Не сформирована';
 
-    const gallery = images.length
-        ? images.map((img) =>
-            `<img class="product-img-lg" src="${escapeAttr(kaspiImageUrl(img))}" alt="" loading="lazy" onclick="this.classList.toggle('product-img-xl')">`
-        ).join('')
-        : '<div class="product-img-lg" style="display:grid;place-items:center;font-size:32px;color:#ccc">📦</div>';
+    const galleryImages = images.map((img) => kaspiImageUrl(img)).filter(Boolean);
+    const gallery = galleryImages.length
+        ? `
+          <div class="gallery-viewer" data-gallery>
+            <button class="gallery-nav gallery-nav--prev" type="button" data-gallery-prev aria-label="Предыдущее фото">‹</button>
+            <img class="gallery-main" src="${escapeAttr(galleryImages[0])}" alt="" data-gallery-main loading="eager">
+            <button class="gallery-nav gallery-nav--next" type="button" data-gallery-next aria-label="Следующее фото">›</button>
+            <div class="gallery-thumbs">
+              ${galleryImages.map((src, index) => `<button class="gallery-thumb${index === 0 ? ' active' : ''}" type="button" data-gallery-index="${index}"><img src="${escapeAttr(src)}" alt="" loading="lazy"></button>`).join('')}
+            </div>
+          </div>
+        `
+        : '<div class="gallery-empty">Фото пока нет</div>';
 
-    const warehouseCards = buildWarehouseDescriptors(warehouses, merchantId, product.pre_order).map((warehouse) => {
+    const warehouseCards = buildWarehouseDescriptors(warehouses, merchantId, product.pre_order).slice(0, 5).map((warehouse) => {
         const fullId = warehouse.store_id || '';
         return `
-      <div class="warehouse-card">
-        <div class="warehouse-card__head">
+      <div class="warehouse-line${warehouse.enabled ? ' is-open' : ''}">
+        <input type="hidden" name="storeId[]" value="${escapeAttr(fullId || defaultStoreId(warehouse.short_id, merchantId))}">
+        <input type="hidden" name="warehouseEnabled[]" value="${warehouse.enabled ? '1' : '0'}" data-warehouse-enabled-value>
+        <div class="warehouse-line__head">
           <div>
             <h4 class="warehouse-card__title">${escapeHtml(warehouse.short_id)}</h4>
-            <div class="warehouse-card__meta">Полный ID: ${escapeHtml(fullId || '—')}</div>
           </div>
-          <span class="badge ${warehouse.enabled ? 'badge--green' : 'badge--gray'}">${warehouse.enabled ? 'Вкл' : 'Выкл'}</span>
+          <label class="toggle">
+            <input type="checkbox" data-warehouse-toggle${warehouse.enabled ? ' checked' : ''}>
+            <span class="toggle__track"></span>
+          </label>
         </div>
-        <div class="warehouse-card__fields">
-          <div class="form-group form-group--full">
-            <label class="form-label">ID склада</label>
-            <input class="form-input form-input--sm" name="storeId[]" type="text" value="${escapeAttr(fullId)}" placeholder="${escapeAttr(defaultStoreId(warehouse.short_id, merchantId))}">
-            <div class="form-hint">Можно поправить вручную. Пустой ID не сохранится.</div>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Статус</label>
-            <select name="warehouseEnabled[]" class="form-select form-select--sm">
-              <option value="1"${warehouse.enabled ? ' selected' : ''}>Вкл</option>
-              <option value="0"${!warehouse.enabled ? ' selected' : ''}>Выкл</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Предзаказ</label>
-            <input class="form-input form-input--sm warehouse-pre-order" name="warehousePreOrder[]" type="number" min="0" max="30" value="${warehouse.pre_order}">
-          </div>
+        <div class="warehouse-line__fields">
           <div class="form-group">
             <label class="form-label">Остаток Kaspi</label>
             <input class="form-input form-input--sm" name="stockCount[]" type="number" min="0" value="${warehouse.stock_count}">
@@ -78,16 +74,22 @@ export function renderProductDetailPage({
             <label class="form-label">Факт. остаток</label>
             <input class="form-input form-input--sm" name="actualStock[]" type="number" min="0" value="${warehouse.actual_stock}">
           </div>
+          <div class="form-group">
+            <label class="form-label">Предзаказ, дней</label>
+            <input class="form-input form-input--sm warehouse-pre-order" name="warehousePreOrder[]" type="number" min="0" max="30" value="${warehouse.pre_order}">
+          </div>
         </div>
       </div>`;
     }).join('');
 
     const myMerchant = String(merchantId || '').trim();
+    const ownMerchantIds = new Set([myMerchant, ...ignoredMerchantIds].map((value) => String(value || '').trim()).filter(Boolean));
     const sellerRows = sellers.map((seller) => {
-        const isMe = String(seller.merchant_id || '').trim() === myMerchant;
+        const sellerId = String(seller.merchant_id || '').trim();
+        const isMe = sellerId && ownMerchantIds.has(sellerId);
         return `<div class="seller-row${isMe ? ' is-me' : ''}">
       <div>
-        <div class="seller-name">${escapeHtml(seller.merchant_name || seller.merchant_id || '—')}${isMe ? ' (Вы)' : ''}</div>
+        <div class="seller-name">${escapeHtml(seller.merchant_name || seller.merchant_id || '—')}${isMe ? ` <span class="badge badge--green">${sellerId === myMerchant ? 'Вы' : 'свой ID'}</span>` : ''}</div>
         <div class="seller-meta">
           ${seller.merchant_rating ? `Рейтинг: ${seller.merchant_rating}` : ''}
           ${seller.merchant_reviews_quantity ? ` • ${seller.merchant_reviews_quantity} отз.` : ''}
@@ -114,18 +116,22 @@ export function renderProductDetailPage({
         <div class="tab active" onclick="switchTab('general', this)">Основное</div>
         <div class="tab" onclick="switchTab('sellers', this)">Продавцы (${sellers.length})</div>
         <div class="tab" onclick="switchTab('settings', this)">Настройки</div>
-        <div class="tab" onclick="switchTab('history', this)">История (${historyItems.length})</div>
       </div>
 
-      <form id="product-save-form" action="/panel/products/${encodeURIComponent(product.sku)}" method="post">
+      <form id="product-save-form" action="/panel/products/${encodeURIComponent(product.sku)}" method="post" data-async-form="1" data-redirect-on-success="1">
 
       <div class="tab-content active" id="tab-general">
         <div class="card">
           <div class="card__body">
-            <div class="flex gap-md flex-wrap" style="margin-bottom:20px">
-              <div class="product-gallery">${gallery}</div>
+            <div class="product-detail-grid">
+              <div>${gallery}</div>
               <div style="flex:1;min-width:250px">
-                <h2 style="margin:0 0 4px">${escapeHtml(product.model || '—')}</h2>
+                <h2 style="margin:0 0 4px">
+                  ${escapeHtml(product.model || '—')}
+                  ${product.shop_link ? `<a class="external-link-icon" href="https://kaspi.kz${escapeAttr(product.shop_link)}" target="_blank" rel="noreferrer" title="Открыть карточку Kaspi" aria-label="Открыть карточку Kaspi">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M7 17L17 7M9 7h8v8"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 17H7V9"/></svg>
+                  </a>` : ''}
+                </h2>
                 <div class="text-sm text-muted" style="margin-bottom:12px">
                   SKU: ${escapeHtml(product.sku)}${resolvedKaspiCode ? ` • Код товара Kaspi: ${escapeHtml(resolvedKaspiCode)}` : ''} • Обновлено: ${escapeHtml(parsedAt)}
                 </div>
@@ -142,73 +148,31 @@ export function renderProductDetailPage({
                     <div class="info-item__label">Позиция</div>
                     <div class="info-item__value">${product.my_position ? `${product.my_position} из ${product.seller_count || '?'}` : '—'}</div>
                   </div>
-                  <div class="info-item">
-                    <div class="info-item__label">Kaspi страница</div>
-                    <div class="info-item__value">${product.shop_link ? `<a href="https://kaspi.kz${escapeAttr(product.shop_link)}" target="_blank" rel="noreferrer">Открыть</a>` : '—'}</div>
+                </div>
+
+                <div class="compact-controls">
+                  <div class="compact-control">
+                    <span class="form-label">В продаже</span>
+                    <input type="hidden" name="available" value="${product.available ? '1' : '0'}" data-toggle-value="available">
+                    <label class="toggle">
+                      <input type="checkbox" data-hidden-toggle="available"${product.available ? ' checked' : ''}>
+                      <span class="toggle__track"></span>
+                    </label>
                   </div>
-                  <div class="info-item">
-                    <div class="info-item__label">Формирование</div>
-                    <div class="info-item__value">${escapeHtml(buildStatusLabel)}</div>
+                  <div class="form-group" style="max-width:150px;margin-bottom:0">
+                    <label class="form-label">Предзаказ, дней</label>
+                    <input class="form-input form-input--sm" id="productPreOrder" name="pre_order" type="number" min="0" max="30" value="${product.pre_order || 0}">
                   </div>
                 </div>
               </div>
             </div>
 
-            <div class="form-row">
-              <div class="form-group">
-                <label class="form-label">В продаже</label>
-                <select name="available" class="form-select">
-                  <option value="1"${product.available ? ' selected' : ''}>Да</option>
-                  <option value="0"${!product.available ? ' selected' : ''}>Нет</option>
-                </select>
-              </div>
-              <div class="form-group">
-                <label class="form-label">Предзаказ (дни)</label>
-                <input class="form-input" id="productPreOrder" name="pre_order" type="number" min="0" max="30" value="${product.pre_order || 0}">
-                <div class="form-hint">При изменении заполняет предзаказ по складам.</div>
-              </div>
-              <div class="form-group">
-                <label class="form-label">Город</label>
-                <input class="form-input" name="city_id" type="text" value="${escapeAttr(product.city_id || '750000000')}">
-              </div>
+            <div class="price-insight-grid">
+              ${priceInsight('Цена на Kaspi сейчас', formatPrice(currentKaspiPrice), 'Текущая цена из последнего чтения Kaspi')}
+              ${priceInsight('Цена выгрузки', `<span id="uploadPriceValue">${formatPrice(uploadPrice)}</span>`, 'Эта цена попадет в XML')}
+              ${priceInsight('1-е место', product.first_place_price ? `${formatPrice(product.first_place_price)}<small>${escapeHtml(product.first_place_seller || '?')}</small>` : '—', 'Самый дешевый продавец')}
+              ${priceInsight('Разница', `<span id="uploadPriceDiff" style="color:${priceDiff > 0 ? 'var(--c-danger)' : priceDiff < 0 ? 'var(--c-success)' : 'inherit'}">${priceDiff ? `${priceDiff > 0 ? '+' : ''}${formatPrice(priceDiff)}` : '—'}</span>`, 'Цена выгрузки минус 1-е место')}
             </div>
-
-            <div class="form-row">
-              <div class="form-group">
-                <label class="form-label">Цена на Kaspi сейчас</label>
-                <div class="form-static">${formatPrice(currentKaspiPrice)}</div>
-              </div>
-              <div class="form-group">
-                <label class="form-label">Цена выгрузки</label>
-                <div class="form-static" id="uploadPriceValue">${formatPrice(uploadPrice)}</div>
-              </div>
-              <div class="form-group">
-                <label class="form-label">1-е место</label>
-                <div class="form-static">${product.first_place_price ? `${formatPrice(product.first_place_price)} (${escapeHtml(product.first_place_seller || '?')})` : '—'}</div>
-              </div>
-              <div class="form-group">
-                <label class="form-label">Разница</label>
-                <div class="form-static" id="uploadPriceDiff" style="color:${priceDiff > 0 ? 'var(--c-danger)' : priceDiff < 0 ? 'var(--c-success)' : 'inherit'}">${priceDiff ? `${priceDiff > 0 ? '+' : ''}${formatPrice(priceDiff)}` : '—'}</div>
-              </div>
-            </div>
-
-            <div style="padding:14px 16px;border-radius:14px;background:linear-gradient(135deg,#f7fafc,#eef5ff);border:1px solid var(--c-border)">
-              <div class="fw-600" style="margin-bottom:4px">Логика карточки</div>
-              <div class="text-sm text-muted">Новый товар сначала получает карточку автоматически через “Сформировать карточку”, а дальше участвует в “Расчете цены” по расписанию. Вся история видна во вкладке ниже.</div>
-            </div>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="card__header">
-            <div>
-              <h3 class="card__title">Склады</h3>
-              <div class="card__subtitle">Каждый склад редактируется отдельно: ID, статус, остатки и предзаказ.</div>
-            </div>
-          </div>
-          <div class="card__body">
-            <div class="warehouse-grid">
-              ${warehouseCards}
             </div>
           </div>
         </div>
@@ -219,7 +183,6 @@ export function renderProductDetailPage({
           <div class="card__header">
             <div>
               <h3 class="card__title">Продавцы</h3>
-              <div class="card__subtitle">Список обновляется при формировании карточки и при каждом расчете цены.</div>
             </div>
           </div>
           <div class="card__body">
@@ -234,101 +197,48 @@ export function renderProductDetailPage({
           <div class="card__body">
             <div class="form-row">
               <div class="form-group">
-                <label class="form-label">Расчет цены</label>
-                <select name="auto_pricing_enabled" class="form-select">
-                  <option value="1"${product.auto_pricing_enabled ? ' selected' : ''}>Включен</option>
-                  <option value="0"${!product.auto_pricing_enabled ? ' selected' : ''}>Выключен</option>
-                </select>
+                <div class="compact-control compact-control--field">
+                  <span class="form-label">Авторасчет</span>
+                  <input type="hidden" name="auto_pricing_enabled" value="${product.auto_pricing_enabled ? '1' : '0'}" data-toggle-value="auto_pricing_enabled">
+                  <label class="toggle">
+                    <input type="checkbox" data-hidden-toggle="auto_pricing_enabled"${product.auto_pricing_enabled ? ' checked' : ''}>
+                    <span class="toggle__track"></span>
+                  </label>
+                </div>
               </div>
               <div class="form-group">
-                <label class="form-label">Шаг бота (₸)</label>
+                ${labelWithHelp('Шаг бота (₸)', 'На сколько тенге korganBot ставит цену ниже конкурента, если это не нарушает минимум и максимум.')}
                 <input class="form-input" id="priceStepInput" name="price_step" type="number" min="1" value="${product.price_step || 1}">
-                <div class="form-hint">На сколько тенге снижать цену относительно конкурента.</div>
               </div>
             </div>
             <div class="form-row">
               <div class="form-group">
                 <label class="form-label">Цена выгрузки</label>
                 <div class="form-static" id="uploadPriceValueSettings">${formatPrice(uploadPrice)}</div>
-                <div class="form-hint">Пересчитывается сразу по сохраненным продавцам без нового запроса к Kaspi.</div>
-              </div>
-              <div class="form-group">
-                <label class="form-label">Причина расчета</label>
-                <div class="form-static" id="uploadPriceReason">${escapeHtml(formatReason(product.last_reason))}</div>
               </div>
             </div>
             <div class="form-row">
               <div class="form-group">
-                <label class="form-label">Минимальная цена</label>
+                ${labelWithHelp('Минимальная цена', 'korganBot никогда не поставит цену ниже этого значения. Должна быть меньше или равна максимальной цене.')}
                 <input class="form-input" id="minPriceInput" name="min_price" type="number" min="0" value="${product.min_price || 0}">
               </div>
               <div class="form-group">
-                <label class="form-label">Максимальная цена</label>
+                ${labelWithHelp('Максимальная цена', 'Верхняя граница цены выгрузки. Если конкурент слишком дорогой, цена не поднимется выше этого значения.')}
                 <input class="form-input" id="maxPriceInput" name="max_price" type="number" min="0" value="${product.max_price || 0}">
               </div>
             </div>
-            <div class="form-hint">Merchant ID и список продавцов, с которыми не нужно конкурировать, задаются в разделе “Настройки”.</div>
           </div>
         </div>
-      </div>
 
-      <div class="tab-content" id="tab-history">
         <div class="card">
           <div class="card__header">
             <div>
-              <h3 class="card__title">История карточки</h3>
-              <div class="card__subtitle">Видно, когда товар добавился, когда формировалась карточка и как пересчитывалась цена.</div>
+              <h3 class="card__title">Склады</h3>
             </div>
           </div>
           <div class="card__body">
-            <div class="info-grid" style="margin-bottom:18px">
-              <div class="info-item">
-                <div class="info-item__label">Всего событий</div>
-                <div class="info-item__value">${escapeHtml(historySummary.total)}</div>
-              </div>
-              <div class="info-item">
-                <div class="info-item__label">Изменений цены</div>
-                <div class="info-item__value">${escapeHtml(historySummary.priceChanges)}</div>
-              </div>
-              <div class="info-item">
-                <div class="info-item__label">Последний расчет цены</div>
-                <div class="info-item__value">${escapeHtml(historySummary.lastCalculation)}</div>
-              </div>
-              <div class="info-item">
-                <div class="info-item__label">Последнее формирование карточки</div>
-                <div class="info-item__value">${escapeHtml(historySummary.lastCardBuild)}</div>
-              </div>
-            </div>
-            ${renderHistoryChart(historyItems)}
+            <div class="warehouse-strip">${warehouseCards}</div>
           </div>
-        </div>
-
-        <div class="card card--flush">
-          <div class="card__header">
-            <div>
-              <h3 class="card__title">Лента событий</h3>
-              <div class="card__subtitle">Последние операции по товару со временем, ценами и ссылкой на сессию.</div>
-            </div>
-          </div>
-          ${historyRows ? `
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Время</th>
-                  <th>Операция</th>
-                  <th>Источник</th>
-                  <th>Цены</th>
-                  <th>Позиция</th>
-                  <th>Детали</th>
-                </tr>
-              </thead>
-              <tbody>${historyRows}</tbody>
-            </table>
-          </div>` : `
-          <div class="card__body">
-            <p class="text-muted">История пока пустая. Она начнет заполняться после импорта, формирования карточки и расчета цены.</p>
-          </div>`}
         </div>
       </div>
 
@@ -336,16 +246,13 @@ export function renderProductDetailPage({
 
       <div class="form-actions" style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn--primary" type="submit" form="product-save-form">Сохранить</button>
-        <form action="/panel/products/${encodeURIComponent(product.sku)}/parse" method="post" style="margin:0">
-          <button class="btn btn--ghost" type="submit">Переформировать</button>
+        <form action="/panel/products/${encodeURIComponent(product.sku)}/auto-price" method="post" data-async-form="1" data-redirect-on-success="1" style="margin:0">
+          <button class="btn btn--ghost btn--sm" type="submit">Рассчитать</button>
         </form>
-        <form action="/panel/products/${encodeURIComponent(product.sku)}/auto-price" method="post" style="margin:0">
-          <button class="btn btn--accent" type="submit">Рассчитать цену</button>
+        <form action="/panel/products/${encodeURIComponent(product.sku)}/parse" method="post" data-async-form="1" data-redirect-on-success="1" style="margin:0">
+          <button class="btn btn--ghost btn--sm" type="submit">Сформировать</button>
         </form>
-        <form action="/panel/products/${encodeURIComponent(product.sku)}/toggle-available" method="post" style="margin:0">
-          <button class="btn ${product.available ? 'btn--danger' : 'btn--success'}" type="submit">${product.available ? 'Снять с продажи' : 'Выставить в продажу'}</button>
-        </form>
-        <form action="/panel/products/${encodeURIComponent(product.sku)}/delete" method="post" style="margin:0" onsubmit="return confirm('Удалить товар?')">
+        <form action="/panel/products/${encodeURIComponent(product.sku)}/delete" method="post" data-async-form="1" data-redirect-on-success="1" style="margin:0" onsubmit="return confirm('Удалить товар?')">
           <button class="btn btn--danger btn--sm" type="submit">Удалить</button>
         </form>
       </div>
@@ -375,7 +282,62 @@ export function renderProductDetailPage({
       const uploadPriceValue = document.getElementById('uploadPriceValue');
       const uploadPriceValueSettings = document.getElementById('uploadPriceValueSettings');
       const uploadPriceDiff = document.getElementById('uploadPriceDiff');
-      const uploadPriceReason = document.getElementById('uploadPriceReason');
+      const productForm = document.getElementById('product-save-form');
+
+      document.querySelectorAll('[data-hidden-toggle]').forEach((checkbox) => {
+        const key = checkbox.dataset.hiddenToggle;
+        const hidden = document.querySelector('[data-toggle-value="' + key + '"]');
+        const sync = () => {
+          if (hidden) hidden.value = checkbox.checked ? '1' : '0';
+        };
+        checkbox.addEventListener('change', sync);
+        sync();
+      });
+
+      document.querySelectorAll('[data-warehouse-toggle]').forEach((checkbox) => {
+        const card = checkbox.closest('.warehouse-line');
+        const hidden = card && card.querySelector('[data-warehouse-enabled-value]');
+        const sync = () => {
+          if (hidden) hidden.value = checkbox.checked ? '1' : '0';
+          if (card) card.classList.toggle('is-open', checkbox.checked);
+        };
+        checkbox.addEventListener('change', sync);
+        sync();
+      });
+
+      if (productForm) {
+        productForm.addEventListener('submit', (event) => {
+          const min = Number(minPriceInput?.value || 0);
+          const max = Number(maxPriceInput?.value || 0);
+          const step = Number(priceStepInput?.value || 0);
+          if (min < 0 || max < 0 || step < 1 || (min > 0 && max > 0 && min > max)) {
+            event.preventDefault();
+            window.KaspiPanel?.showAlert?.('error', 'Проверь цены: минимум не может быть больше максимума, шаг должен быть от 1.');
+          }
+        }, { capture: true });
+      }
+
+      (() => {
+        const galleries = document.querySelectorAll('[data-gallery]');
+        galleries.forEach((gallery) => {
+          const images = Array.from(gallery.querySelectorAll('.gallery-thumb img')).map((img) => img.src);
+          const main = gallery.querySelector('[data-gallery-main]');
+          let current = 0;
+          const show = (index) => {
+            if (!images.length || !main) return;
+            current = (index + images.length) % images.length;
+            main.src = images[current];
+            gallery.querySelectorAll('.gallery-thumb').forEach((thumb, thumbIndex) => {
+              thumb.classList.toggle('active', thumbIndex === current);
+            });
+          };
+          gallery.querySelector('[data-gallery-prev]')?.addEventListener('click', () => show(current - 1));
+          gallery.querySelector('[data-gallery-next]')?.addEventListener('click', () => show(current + 1));
+          gallery.querySelectorAll('[data-gallery-index]').forEach((button) => {
+            button.addEventListener('click', () => show(Number(button.dataset.galleryIndex || 0)));
+          });
+        });
+      })();
 
       [minPriceInput, maxPriceInput, priceStepInput].forEach((input) => {
         if (input) input.addEventListener('input', updateUploadPricePreview);
@@ -389,8 +351,6 @@ export function renderProductDetailPage({
 
         if (uploadPriceValue) uploadPriceValue.textContent = priceText;
         if (uploadPriceValueSettings) uploadPriceValueSettings.textContent = priceText;
-        if (uploadPriceReason) uploadPriceReason.textContent = preview.reasonLabel;
-
         if (!uploadPriceDiff) return;
         const firstPlacePrice = Number(pricingPreviewData.firstPlacePrice || 0);
         if (!firstPlacePrice || !preview.price) {
@@ -666,6 +626,25 @@ function positiveNumber(value) {
 function formatPrice(n) {
     if (!n) return '—';
     return `${Number(n).toLocaleString('ru-RU')} ₸`;
+}
+
+function priceInsight(label, value, hint = '') {
+    return `
+      <div class="price-insight">
+        <div class="price-insight__label">${escapeHtml(label)}</div>
+        <div class="price-insight__value">${value}</div>
+        ${hint ? `<div class="price-insight__hint">${escapeHtml(hint)}</div>` : ''}
+      </div>
+    `;
+}
+
+function labelWithHelp(label, help) {
+    return `
+      <div class="label-row">
+        <label class="form-label">${escapeHtml(label)}</label>
+        <button class="help-dot" type="button" data-help="${escapeAttr(help)}">?</button>
+      </div>
+    `;
 }
 
 function formatReason(value) {

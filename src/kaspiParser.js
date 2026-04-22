@@ -21,256 +21,81 @@ const SELLER_RETRYABLE_STATUSES = new Set([405, 429, 502, 503, 504]);
 
 export async function parseKaspiProductById(kaspiId, options = {}) {
   const target = normalizeParseTarget(kaspiId, options);
-  const cityId = options.cityId || process.env.KASPI_CITY_ID || DEFAULT_CITY_ID;
-  const url = options.url || buildKaspiProductUrl(target, cityId);
   const executablePath = await resolveBrowserPath(options.executablePath);
   let browser;
+  let context;
 
   try {
-    browser = await chromium.launch({
-      executablePath,
-      headless: options.headless ?? process.env.KASPI_BROWSER_HEADLESS !== 'false',
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-blink-features=AutomationControlled',
-        '--disable-http2',
-        '--window-size=1920,1080',
-        '--lang=ru-RU,ru',
-      ],
-    });
-
-    const context = await browser.newContext({
-      viewport: { width: 1920, height: 1080 },
-      userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      locale: 'ru-RU',
-      extraHTTPHeaders: {
-        'accept-language': 'ru-RU,ru;q=0.9,kk-KZ;q=0.8,kk;q=0.7,en;q=0.6',
-      },
-    });
-    await context.addInitScript(() => {
-      Object.defineProperty(navigator, 'language', { get: () => 'ru-RU' });
-      Object.defineProperty(navigator, 'languages', {
-        get: () => ['ru-RU', 'ru', 'kk-KZ', 'en'],
-      });
-    });
-
+    browser = await launchKaspiBrowser({ ...options, executablePath });
+    context = await createKaspiBrowserContext(browser, options);
     const page = await context.newPage();
-    page.setDefaultTimeout(options.timeoutMs || Number(process.env.KASPI_PARSER_TIMEOUT_MS || DEFAULT_TIMEOUT_MS));
-
-    const response = await page.goto(url, { waitUntil: 'domcontentloaded' });
-    await assertKaspiShopAvailable(page, response);
-    await ensureProductPage(page, target, cityId);
-    await assertKaspiShopAvailable(page);
-    await page.waitForLoadState('networkidle').catch(() => null);
-    await page
-      .waitForSelector('h1, .item__heading, meta[property="og:title"], script[type="application/ld+json"]', { timeout: 15_000 })
-      .catch(() => null);
-
-    const parsedData = await page.evaluate(() => {
-      const scripts = [...document.querySelectorAll('script[type="application/ld+json"]')]
-        .map((node) => node.textContent || '')
-        .map((text) => {
-          try {
-            return JSON.parse(text);
-          } catch {
-            return null;
-          }
-        })
-        .flatMap((value) => Array.isArray(value) ? value : value ? [value] : []);
-      const schemaProduct = scripts.find((entry) => {
-        const type = entry?.['@type'];
-        return type === 'Product' || (Array.isArray(type) && type.includes('Product'));
-      }) || null;
-      const canonicalUrl =
-        document.querySelector('link[rel="canonical"]')?.getAttribute('href')?.trim()
-        || location.href;
-      const title =
-        document.querySelector('.item__heading')?.textContent?.trim() ||
-        document.querySelector('h1')?.textContent?.trim() ||
-        schemaProduct?.name?.trim() ||
-        document.querySelector('meta[property="og:title"]')?.getAttribute('content')?.trim();
-      const productCodeText =
-        document.querySelector('.item__sku')?.textContent?.trim()
-        || schemaProduct?.sku?.trim?.()
-        || '';
-      const rawPrice =
-        document.querySelector('.item__price-once')?.textContent ||
-        schemaProduct?.offers?.price ||
-        document.querySelector('meta[property="product:price:amount"]')?.getAttribute('content');
-      const price = Number(rawPrice?.match(/\d/g)?.join(''));
-
-      const breadcrumbs = [...document.querySelectorAll('.breadcrumbs__el, [itemtype*="BreadcrumbList"] [itemprop="name"], .breadcrumbs a, nav[aria-label*="Breadcrumb"] a')];
-      const category = breadcrumbs.length > 1
-        ? breadcrumbs.map((node) => node.textContent?.trim() || '').filter(Boolean).slice(1, -1).pop() || ''
-        : '';
-      const brand =
-        schemaProduct?.brand?.name?.trim()
-        || schemaProduct?.brand?.trim?.()
-        || document.querySelector('[itemprop="brand"]')?.textContent?.trim()
-        || document.querySelector('[data-test-id="merchant-name"]')?.textContent?.trim()
-        || '';
-      const imageCandidates = [];
-      if (Array.isArray(schemaProduct?.image)) {
-        imageCandidates.push(...schemaProduct.image);
-      } else if (schemaProduct?.image) {
-        imageCandidates.push(schemaProduct.image);
-      }
-      imageCandidates.push(
-        ...[...document.querySelectorAll('img[src*="sys_master/images"], img[src*="resources.cdn-kaspi.kz"]')]
-          .map((img) => img.getAttribute('src')),
-      );
-      const images = [...new Set(imageCandidates
-        .map((value) => String(value || '').trim())
-        .filter(Boolean)
-        .map((value) => value.replace(/^https?:\/\/resources\.cdn-kaspi\.kz\/shop\/medias\/sys_master\/images\/images\//, ''))
-        .map((value) => value.replace(/^\/+/, '')),
-      )];
-      const productId =
-        (canonicalUrl.match(/-(\d+)\/?(?:\?.*)?$/) || [])[1]
-        || String(window.BACKEND?.components?.item?.item?.id || '').trim()
-        || '';
-      const shopLink = canonicalUrl
-        ? canonicalUrl.replace(/^https?:\/\/[^/]+/, '')
-        : location.pathname;
-
-      return title ? {
-        title,
-        price: Number.isFinite(price) ? price : 0,
-        category,
-        brand,
-        images,
-        kaspiId: productId,
-        productCode: productCodeText,
-        shopLink,
-      } : null;
-    });
-
-    if (!parsedData) {
-      throw new Error('PARSING_FROM_KASPI_FAILED');
-    }
-
-    if (isKaspiNotFoundTitle(parsedData.title)) {
-      if (target.expectedProductCode) {
-        throwSkuNotFoundError(target, 'Kaspi карточка с таким кодом не найдена');
-      }
-      throw new Error('Kaspi карточка товара не найдена.');
-    }
-
-    const productId = normalizeKaspiId(parsedData.kaspiId || target.kaspiId);
-    assertProductCodeMatchesTarget(target, {
-      title: parsedData.title,
-      productCode: parsedData.productCode,
-      kaspiId: productId,
-      shopLink: parsedData.shopLink,
-      url: page.url(),
-    });
-
-    const sellers = await page.evaluate(
-      async ({ productId, cityId, sellerRetryAttempts, sellerRetryDelayMs }) => {
-        const product = window.BACKEND?.components?.item?.card?.promoConditions || {};
-        const limit = 50;
-        const offers = [];
-        const wait = (ms) => new Promise((resolve) => {
-          setTimeout(resolve, ms);
-        });
-        const retryableStatuses = new Set([405, 429, 502, 503, 504]);
-
-        for (let pageNumber = 0; pageNumber < 20; pageNumber += 1) {
-          let response;
-
-          for (let attempt = 0; attempt <= sellerRetryAttempts; attempt += 1) {
-            response = await fetch(`/yml/offer-view/offers/${productId}`, {
-              method: 'POST',
-              credentials: 'include',
-              headers: {
-                accept: 'application/json, text/plain, */*',
-                'content-type': 'application/json',
-                'x-requested-with': 'XMLHttpRequest',
-              },
-              body: JSON.stringify({
-                cityId,
-                id: productId,
-                merchantUID: [],
-                limit,
-                page: pageNumber,
-                product,
-                sortOption: 'PRICE',
-              }),
-            });
-
-            if (response.ok || !retryableStatuses.has(response.status) || attempt >= sellerRetryAttempts) {
-              break;
-            }
-
-            await wait(sellerRetryDelayMs * (attempt + 1));
-          }
-
-          if (!response?.ok) {
-            const message = await response?.text().catch(() => '') || '';
-            throw new Error(`SELLERS_REQUEST_FAILED:${response?.status || 'NO_RESPONSE'}:${message.slice(0, 200)}`);
-          }
-
-          const data = await response.json();
-          offers.push(...(data.offers || []));
-
-          const total =
-            data.total || data.offersCount || data.totalElements || data.offers?.length || 0;
-
-          if (offers.length >= total || !data.offers?.length) {
-            break;
-          }
-        }
-
-        return offers.map((offer) => ({
-          merchantId:
-            offer.merchantId
-            ?? offer.merchant_id
-            ?? offer.merchantUID
-            ?? offer.merchantUid
-            ?? offer.merchant?.id
-            ?? offer.merchant?.uid
-            ?? offer.uid
-            ?? offer.id
-            ?? '',
-          merchantName:
-            offer.merchantName
-            ?? offer.merchant_name
-            ?? offer.merchant?.name
-            ?? offer.merchant?.title
-            ?? offer.name
-            ?? '',
-          price: Number(offer.price),
-          merchantRating: offer.merchantRating,
-          merchantReviewsQuantity: offer.merchantReviewsQuantity,
-          deliveryType: offer.deliveryType,
-          kaspiDelivery: offer.kaspiDelivery,
-        }));
-      },
-      {
-        productId,
-        cityId,
-        sellerRetryAttempts: Number(options.sellerRetryAttempts ?? process.env.KASPI_SELLER_RETRY_ATTEMPTS ?? 2),
-        sellerRetryDelayMs: Number(options.sellerRetryDelayMs ?? process.env.KASPI_SELLER_RETRY_DELAY_MS ?? 1500),
-      },
-    );
-
-    return {
-      kaspiId: productId,
-      cityId,
-      title: parsedData.title,
-      price: parsedData.price,
-      category: parsedData.category || '',
-      brand: parsedData.brand || '',
-      images: parsedData.images || [],
-      shopLink: parsedData.shopLink || '',
-      url: page.url(),
-      sellers: sellers.filter((seller) => Number.isFinite(seller.price) && seller.price > 0),
-    };
+    return await parseKaspiProductTargetWithPage(page, target, options);
   } finally {
+    await context?.close().catch(() => null);
     await browser?.close();
   }
+}
+
+export async function createKaspiProductParserSession(options = {}) {
+  const executablePath = await resolveBrowserPath(options.executablePath);
+  let browser = null;
+  let context = null;
+  let page = null;
+
+  const close = async () => {
+    await page?.close().catch(() => null);
+    page = null;
+    await context?.close().catch(() => null);
+    context = null;
+    await browser?.close().catch(() => null);
+    browser = null;
+  };
+
+  const ensurePage = async (parseOptions = {}) => {
+    const sessionOptions = {
+      ...options,
+      ...parseOptions,
+      executablePath: parseOptions.executablePath || options.executablePath || executablePath,
+    };
+
+    if (!browser || !browser.isConnected()) {
+      await close();
+      browser = await launchKaspiBrowser(sessionOptions);
+      context = await createKaspiBrowserContext(browser, sessionOptions);
+      page = await context.newPage();
+      return page;
+    }
+
+    if (!context) {
+      context = await createKaspiBrowserContext(browser, sessionOptions);
+    }
+
+    if (!page || page.isClosed()) {
+      page = await context.newPage();
+    }
+
+    return page;
+  };
+
+  return {
+    async parse(kaspiId, parseOptions = {}) {
+      const target = normalizeParseTarget(kaspiId, parseOptions);
+      try {
+        const activePage = await ensurePage(parseOptions);
+        return await parseKaspiProductTargetWithPage(activePage, target, {
+          ...options,
+          ...parseOptions,
+          executablePath: parseOptions.executablePath || options.executablePath || executablePath,
+        });
+      } catch (error) {
+        if (isClosedBrowserSessionError(error)) {
+          await close();
+        }
+        throw error;
+      }
+    },
+    close,
+  };
 }
 
 export async function parseKaspiProductByIdLight(kaspiId, options = {}) {
@@ -336,6 +161,266 @@ export async function parseKaspiProductByIdLight(kaspiId, options = {}) {
       kaspiDelivery: offer.kaspiDelivery,
     })).filter((seller) => Number.isFinite(seller.price) && seller.price > 0),
   };
+}
+
+async function parseKaspiProductTargetWithPage(page, target, options = {}) {
+  const cityId = options.cityId || process.env.KASPI_CITY_ID || DEFAULT_CITY_ID;
+  const url = options.url || buildKaspiProductUrl(target, cityId);
+  page.setDefaultTimeout(options.timeoutMs || Number(process.env.KASPI_PARSER_TIMEOUT_MS || DEFAULT_TIMEOUT_MS));
+
+  const response = await page.goto(url, { waitUntil: 'domcontentloaded' });
+  await assertKaspiShopAvailable(page, response);
+  await ensureProductPage(page, target, cityId);
+  await assertKaspiShopAvailable(page);
+  await page.waitForLoadState('networkidle').catch(() => null);
+  await page
+    .waitForSelector('h1, .item__heading, meta[property="og:title"], script[type="application/ld+json"]', { timeout: 15_000 })
+    .catch(() => null);
+
+  const parsedData = await page.evaluate(() => {
+    const scripts = [...document.querySelectorAll('script[type="application/ld+json"]')]
+      .map((node) => node.textContent || '')
+      .map((text) => {
+        try {
+          return JSON.parse(text);
+        } catch {
+          return null;
+        }
+      })
+      .flatMap((value) => Array.isArray(value) ? value : value ? [value] : []);
+    const schemaProduct = scripts.find((entry) => {
+      const type = entry?.['@type'];
+      return type === 'Product' || (Array.isArray(type) && type.includes('Product'));
+    }) || null;
+    const canonicalUrl =
+      document.querySelector('link[rel="canonical"]')?.getAttribute('href')?.trim()
+      || location.href;
+    const title =
+      document.querySelector('.item__heading')?.textContent?.trim() ||
+      document.querySelector('h1')?.textContent?.trim() ||
+      schemaProduct?.name?.trim() ||
+      document.querySelector('meta[property="og:title"]')?.getAttribute('content')?.trim();
+    const productCodeText =
+      document.querySelector('.item__sku')?.textContent?.trim()
+      || schemaProduct?.sku?.trim?.()
+      || '';
+    const rawPrice =
+      document.querySelector('.item__price-once')?.textContent ||
+      schemaProduct?.offers?.price ||
+      document.querySelector('meta[property="product:price:amount"]')?.getAttribute('content');
+    const price = Number(rawPrice?.match(/\d/g)?.join(''));
+
+    const breadcrumbs = [...document.querySelectorAll('.breadcrumbs__el, [itemtype*="BreadcrumbList"] [itemprop="name"], .breadcrumbs a, nav[aria-label*="Breadcrumb"] a')];
+    const category = breadcrumbs.length > 1
+      ? breadcrumbs.map((node) => node.textContent?.trim() || '').filter(Boolean).slice(1, -1).pop() || ''
+      : '';
+    const brand =
+      schemaProduct?.brand?.name?.trim()
+      || schemaProduct?.brand?.trim?.()
+      || document.querySelector('[itemprop="brand"]')?.textContent?.trim()
+      || document.querySelector('[data-test-id="merchant-name"]')?.textContent?.trim()
+      || '';
+    const imageCandidates = [];
+    if (Array.isArray(schemaProduct?.image)) {
+      imageCandidates.push(...schemaProduct.image);
+    } else if (schemaProduct?.image) {
+      imageCandidates.push(schemaProduct.image);
+    }
+    imageCandidates.push(
+      ...[...document.querySelectorAll('img[src*="sys_master/images"], img[src*="resources.cdn-kaspi.kz"]')]
+        .map((img) => img.getAttribute('src')),
+    );
+    const images = [...new Set(imageCandidates
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+      .map((value) => value.replace(/^https?:\/\/resources\.cdn-kaspi\.kz\/shop\/medias\/sys_master\/images\/images\//, ''))
+      .map((value) => value.replace(/^\/+/, '')),
+    )];
+    const productId =
+      (canonicalUrl.match(/-(\d+)\/?(?:\?.*)?$/) || [])[1]
+      || String(window.BACKEND?.components?.item?.item?.id || '').trim()
+      || '';
+    const shopLink = canonicalUrl
+      ? canonicalUrl.replace(/^https?:\/\/[^/]+/, '')
+      : location.pathname;
+
+    return title ? {
+      title,
+      price: Number.isFinite(price) ? price : 0,
+      category,
+      brand,
+      images,
+      kaspiId: productId,
+      productCode: productCodeText,
+      shopLink,
+    } : null;
+  });
+
+  if (!parsedData) {
+    throw new Error('PARSING_FROM_KASPI_FAILED');
+  }
+
+  if (isKaspiNotFoundTitle(parsedData.title)) {
+    if (target.expectedProductCode) {
+      throwSkuNotFoundError(target, 'Kaspi карточка с таким кодом не найдена');
+    }
+    throw new Error('Kaspi карточка товара не найдена.');
+  }
+
+  const productId = normalizeKaspiId(parsedData.kaspiId || target.kaspiId);
+  assertProductCodeMatchesTarget(target, {
+    title: parsedData.title,
+    productCode: parsedData.productCode,
+    kaspiId: productId,
+    shopLink: parsedData.shopLink,
+    url: page.url(),
+  });
+
+  const sellers = await page.evaluate(
+    async ({ productId, cityId, sellerRetryAttempts, sellerRetryDelayMs }) => {
+      const product = window.BACKEND?.components?.item?.card?.promoConditions || {};
+      const limit = 50;
+      const offers = [];
+      const wait = (ms) => new Promise((resolve) => {
+        setTimeout(resolve, ms);
+      });
+      const retryableStatuses = new Set([405, 429, 502, 503, 504]);
+
+      for (let pageNumber = 0; pageNumber < 20; pageNumber += 1) {
+        let response;
+
+        for (let attempt = 0; attempt <= sellerRetryAttempts; attempt += 1) {
+          response = await fetch(`/yml/offer-view/offers/${productId}`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: {
+              accept: 'application/json, text/plain, */*',
+              'content-type': 'application/json',
+              'x-requested-with': 'XMLHttpRequest',
+            },
+            body: JSON.stringify({
+              cityId,
+              id: productId,
+              merchantUID: [],
+              limit,
+              page: pageNumber,
+              product,
+              sortOption: 'PRICE',
+            }),
+          });
+
+          if (response.ok || !retryableStatuses.has(response.status) || attempt >= sellerRetryAttempts) {
+            break;
+          }
+
+          await wait(sellerRetryDelayMs * (attempt + 1));
+        }
+
+        if (!response?.ok) {
+          const message = await response?.text().catch(() => '') || '';
+          throw new Error(`SELLERS_REQUEST_FAILED:${response?.status || 'NO_RESPONSE'}:${message.slice(0, 200)}`);
+        }
+
+        const data = await response.json();
+        offers.push(...(data.offers || []));
+
+        const total =
+          data.total || data.offersCount || data.totalElements || data.offers?.length || 0;
+
+        if (offers.length >= total || !data.offers?.length) {
+          break;
+        }
+      }
+
+      return offers.map((offer) => ({
+        merchantId:
+          offer.merchantId
+          ?? offer.merchant_id
+          ?? offer.merchantUID
+          ?? offer.merchantUid
+          ?? offer.merchant?.id
+          ?? offer.merchant?.uid
+          ?? offer.uid
+          ?? offer.id
+          ?? '',
+        merchantName:
+          offer.merchantName
+          ?? offer.merchant_name
+          ?? offer.merchant?.name
+          ?? offer.merchant?.title
+          ?? offer.name
+          ?? '',
+        price: Number(offer.price),
+        merchantRating: offer.merchantRating,
+        merchantReviewsQuantity: offer.merchantReviewsQuantity,
+        deliveryType: offer.deliveryType,
+        kaspiDelivery: offer.kaspiDelivery,
+      }));
+    },
+    {
+      productId,
+      cityId,
+      sellerRetryAttempts: Number(options.sellerRetryAttempts ?? process.env.KASPI_SELLER_RETRY_ATTEMPTS ?? 2),
+      sellerRetryDelayMs: Number(options.sellerRetryDelayMs ?? process.env.KASPI_SELLER_RETRY_DELAY_MS ?? 1500),
+    },
+  );
+
+  return {
+    kaspiId: productId,
+    cityId,
+    title: parsedData.title,
+    price: parsedData.price,
+    category: parsedData.category || '',
+    brand: parsedData.brand || '',
+    images: parsedData.images || [],
+    shopLink: parsedData.shopLink || '',
+    url: page.url(),
+    sellers: sellers.filter((seller) => Number.isFinite(seller.price) && seller.price > 0),
+  };
+}
+
+async function launchKaspiBrowser(options = {}) {
+  return chromium.launch({
+    executablePath: options.executablePath,
+    headless: options.headless ?? process.env.KASPI_BROWSER_HEADLESS !== 'false',
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-blink-features=AutomationControlled',
+      '--disable-http2',
+      '--window-size=1920,1080',
+      '--lang=ru-RU,ru',
+    ],
+  });
+}
+
+async function createKaspiBrowserContext(browser, options = {}) {
+  const context = await browser.newContext({
+    viewport: { width: 1920, height: 1080 },
+    userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    locale: 'ru-RU',
+    extraHTTPHeaders: {
+      'accept-language': 'ru-RU,ru;q=0.9,kk-KZ;q=0.8,kk;q=0.7,en;q=0.6',
+    },
+  });
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'language', { get: () => 'ru-RU' });
+    Object.defineProperty(navigator, 'languages', {
+      get: () => ['ru-RU', 'ru', 'kk-KZ', 'en'],
+    });
+  });
+  return context;
+}
+
+function isClosedBrowserSessionError(error) {
+  const message = error instanceof Error ? error.message : String(error || '');
+  return [
+    'Target page, context or browser has been closed',
+    'Browser has been closed',
+    'Connection closed',
+    'Session closed',
+  ].some((pattern) => message.includes(pattern));
 }
 
 function normalizeParseTarget(value, options = {}) {

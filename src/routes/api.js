@@ -61,8 +61,8 @@ router.get('/stats', (_req, res) => {
 // ─── Products ───────────────────────────────────────────
 
 router.get('/products', (req, res) => {
-  const { sort, order, search, available } = req.query;
-  res.json(getAllProducts({ sort, order, search, available }));
+  const { sort, order, search, available, category } = req.query;
+  res.json(getAllProducts({ sort, order, search, available, category }));
 });
 
 router.post('/products/parse-all', async (req, res, next) => {
@@ -123,9 +123,20 @@ router.post('/products/:sku', (req, res) => {
   }
 });
 
-router.delete('/products/:sku', (req, res) => {
-  deleteProduct(req.params.sku);
-  res.json({ ok: true });
+router.delete('/products/:sku', async (req, res, next) => {
+  try {
+    const result = deleteProduct(req.params.sku);
+    if (!result.changes) {
+      return res.status(404).json({
+        ok: false,
+        error: `Товар ${req.params.sku} не найден или уже удален.`,
+      });
+    }
+    await generateAndSaveXml().catch(() => { });
+    res.json({ ok: true, sku: req.params.sku, deleted: Number(result.changes || 0) });
+  } catch (error) {
+    next(error);
+  }
 });
 
 router.post('/products/bulk/update', (req, res) => {
@@ -226,9 +237,12 @@ router.get('/settings', (_req, res) => {
     kaspi_pull_enabled: getSetting('kaspi_pull_enabled', '0'),
     kaspi_push_interval_ms: getSetting('kaspi_push_interval_ms', '0'),
     kaspi_push_enabled: getSetting('kaspi_push_enabled', '0'),
+    auto_pricing_concurrency: getSetting('auto_pricing_concurrency', '4'),
     merchant_id: getSetting('merchant_id', ''),
     merchant_name: getSetting('merchant_name', ''),
     ignored_merchant_ids: getSetting('ignored_merchant_ids', getSetting('merchant_id', '')),
+    profile_email: getSetting('profile_email', ''),
+    profile_city_id: getSetting('profile_city_id', ''),
   });
 });
 
@@ -242,9 +256,15 @@ router.post('/settings', (req, res) => {
     'kaspi_pull_enabled',
     'kaspi_push_interval_ms',
     'kaspi_push_enabled',
+    'auto_pricing_concurrency',
     'merchant_id',
     'merchant_name',
     'ignored_merchant_ids',
+    'profile_email',
+    'profile_city_id',
+    'city_id',
+    'panel_user',
+    'panel_password',
   ];
   for (const [key, value] of Object.entries(req.body)) {
     if (allowed.includes(key)) {

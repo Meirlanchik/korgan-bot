@@ -13,6 +13,7 @@ export function renderFinancePage({
   ordersPage,
   ordersPageCount,
   loadError = '',
+  loadNotice = '',
   fetchedAt = '',
   message = '',
   error = '',
@@ -126,7 +127,8 @@ export function renderFinancePage({
           </div>
         </div>
         <div class="card__body">
-          <div class="stats">${summaryCards}</div>
+          ${loadNotice ? `<div class="alert alert--success" style="margin-bottom:16px">${escapeHtml(loadNotice)}</div>` : ''}
+          <div class="stats finance-summary">${summaryCards}</div>
           <div class="form-hint">Формула прибыли: продажа − закуп − упаковка (${escapeHtml(String(settings.packagingPercent))}%) − доставка клиенту − комиссия Kaspi − налог (${escapeHtml(String(settings.taxPercent))}%).</div>
         </div>
       </div>
@@ -139,8 +141,8 @@ export function renderFinancePage({
           </div>
         </div>
         <div class="card__body">
-          <form method="get" action="/panel/finance">
-            <div class="form-row">
+          <form method="get" action="/panel/finance" class="compact-filter-form">
+            <div class="compact-filter-grid">
               <div class="form-group">
                 <label class="form-label">Период</label>
                 <select class="form-select" name="period">
@@ -177,7 +179,7 @@ export function renderFinancePage({
                 </select>
               </div>
             </div>
-            <div class="form-actions">
+            <div class="form-actions compact-filter-actions">
               <button class="btn btn--primary" type="submit">Показать отчет</button>
               <a class="btn btn--ghost" href="/panel/finance">Сбросить</a>
             </div>
@@ -206,7 +208,7 @@ export function renderFinancePage({
         </div>
         <div class="card__body">
           <form method="post" action="/panel/finance/settings">
-            <div class="form-row">
+            <div class="compact-filter-grid">
               <div class="form-group">
                 <label class="form-label">Kaspi API токен</label>
                 <input class="form-input" type="password" name="apiToken" value="" placeholder="${escapeAttr(settings.tokenMasked || 'Не задан')}">
@@ -238,7 +240,7 @@ export function renderFinancePage({
         </div>
       </div>
 
-      <div class="form-row" style="align-items:start">
+      <div class="finance-side-grid">
         <div class="card" style="margin-bottom:0">
           <div class="card__header">
             <h3 class="card__title">Распределение по складам</h3>

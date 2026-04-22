@@ -27,98 +27,29 @@ export function renderHome({
     message,
     error,
     content: `
-      <div class="stats">
-        ${renderStat('В продаже', stats.active, `Не в продаже: ${stats.inactive}`, 'var(--c-success)')}
-        ${renderStat('Всего товаров', stats.total, `Складов: ${stats.warehouseIds.length || 0}`)}
-        ${renderStat('XML обновлен', status.updatedAt ? renderDateTime(status.updatedAt, { dateStyle: 'short', timeStyle: 'short' }) : '—', `Компания: ${escapeHtml(status.company || '—')}`)}
-        ${renderStat('Публичная ссылка', `<a href="${escapeAttr(publicFeedUrl)}" target="_blank" rel="noreferrer">${escapeHtml(publicFeedUrl)}</a>`, 'Лента доступна для Kaspi')}
-      </div>
-
-      <form method="post" action="/panel/settings/automation">
-        <input type="hidden" name="returnTo" value="/panel/">
-        <div class="card">
-          <div class="card__header">
-            <div>
-              <h3 class="card__title">Быстрое управление автоматизацией</h3>
-              <div class="card__subtitle">Здесь можно сразу включать и выключать автозагрузку, автовыгрузку, автоформирование и авторасчет цены.</div>
-            </div>
-            <a class="btn btn--ghost btn--sm" href="/panel/settings">Подробные настройки</a>
-          </div>
-          <div class="card__body">
-            <div class="automation-grid">
-              ${renderAutomationCard('Авторасчет цены', 'autoPricingEnabled', 'autoPricingIntervalMin', automationState.autoPricing)}
-              ${renderAutomationCard('Автоформирование', 'fullParseEnabled', 'fullParseIntervalMin', automationState.fullParse)}
-              ${renderAutomationCard('Автозагрузка с Kaspi', 'kaspiPullEnabled', 'kaspiPullIntervalMin', automationState.kaspiPull)}
-              ${renderAutomationCard('Автовыгрузка в Kaspi', 'kaspiPushEnabled', 'kaspiPushIntervalMin', automationState.kaspiPush)}
-            </div>
-            <div class="form-actions">
-              <button class="btn btn--primary" type="submit">Сохранить</button>
-            </div>
-          </div>
+      <section class="home-dashboard">
+        <div class="home-dashboard__focus">
+          <div class="home-dashboard__kicker">Каталог</div>
+          <div class="home-dashboard__number">${escapeHtml(stats.total || 0)}</div>
+          <div class="home-dashboard__caption">товаров под управлением korganBot</div>
         </div>
-      </form>
+        <div class="stats home-dashboard__stats">
+          ${renderStat('В продаже', stats.active, 'Активные товары', 'var(--c-success)')}
+          ${renderStat('Не в продаже', stats.inactive, 'Сняты с продажи', 'var(--c-danger)')}
+          ${renderStat('Склады', stats.warehouseIds.length || 0, 'Подключенные точки')}
+        </div>
+      </section>
 
-      <div class="stats">
+      <div class="stats operation-stats">
         ${renderOperationStat('Пересчет цены', latestSessions.price)}
         ${renderOperationStat('Формирование', latestSessions.build)}
         ${renderOperationStat('Загрузка с Kaspi', latestSessions.pull)}
         ${renderOperationStat('Выгрузка в Kaspi', latestSessions.push)}
       </div>
 
-      <div class="card">
-        <div class="card__header">
-          <div>
-            <h3 class="card__title">Ручные действия</h3>
-            <div class="card__subtitle">Быстрые кнопки для импорта, выгрузки и пакетных операций по товарам.</div>
-          </div>
-        </div>
-        <div class="card__body">
-          <div class="quick-actions">
-            <form action="/panel/kaspi/download" method="post">
-              <button class="btn btn--accent" type="submit">Обновить с Kaspi</button>
-            </form>
-            <form action="/panel/kaspi/upload" method="post">
-              <button class="btn btn--success" type="submit">Загрузить в Kaspi</button>
-            </form>
-            <form action="/panel/auto-pricing/run" method="post">
-              <button class="btn btn--ghost" type="submit">Рассчитать все</button>
-            </form>
-            <form action="/panel/products/parse-all" method="post">
-              <button class="btn btn--ghost" type="submit">Переформировать все</button>
-            </form>
-          </div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card__header">
-          <div>
-            <h3 class="card__title">Магазин</h3>
-            <div class="card__subtitle">Merchant ID не дублируется в настройках, но здесь его можно проверить и поправить при необходимости.</div>
-          </div>
-        </div>
-        <div class="card__body">
-          <form action="/panel/settings/general" method="post">
-            <div class="form-row">
-              <div class="form-group">
-                <label class="form-label">Merchant ID</label>
-                <input class="form-input" name="merchantId" type="text" value="${escapeAttr(stats.merchantId || '')}">
-              </div>
-              <div class="form-group">
-                <label class="form-label">Название магазина</label>
-                <input class="form-input" name="merchantName" type="text" value="${escapeAttr(stats.merchantName || '')}" placeholder="Например, BOT">
-              </div>
-            </div>
-            <div class="form-actions">
-              <button class="btn btn--primary" type="submit">Сохранить данные магазина</button>
-            </div>
-          </form>
-        </div>
-      </div>
-
       <div class="card card--flush">
         <div class="card__header">
-          <h3 class="card__title">Последние события</h3>
+          <h3 class="card__title">Уведомления</h3>
           <a class="btn btn--ghost btn--sm" href="/panel/history?tab=events">Открыть историю</a>
         </div>
         <div class="card__body">
@@ -196,9 +127,10 @@ function renderOperationStat(label, session) {
         : session?.status === 'error'
           ? 'Ошибка'
           : 'Пока не было';
+  const date = session?.finished_at || session?.started_at || '';
   const note = session
-    ? `${escapeHtml(session.message || '') || '—'}`
-    : 'Сессии появятся после первого запуска';
+    ? `${date ? `${renderDateTime(date, { dateStyle: 'short', timeStyle: 'medium' })} • ` : ''}${escapeHtml(session.message || '—')}`
+    : 'Данных пока нет';
 
   return renderStat(label, escapeHtml(status), note);
 }

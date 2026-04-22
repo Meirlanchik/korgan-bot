@@ -1,7 +1,14 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { parseKaspiProductById, parseKaspiProductByIdLight } from './kaspiParser.js';
-import { resolveKaspiProductCardFromMerchantCabinet } from './kaspiCabinet.js';
+import {
+    createKaspiProductParserSession,
+    parseKaspiProductById,
+    parseKaspiProductByIdLight,
+} from './kaspiParser.js';
+import {
+    resolveKaspiProductCardFromMerchantCabinet,
+    resolveKaspiProductCardsFromMerchantCabinetBatch,
+} from './kaspiCabinet.js';
 import { readCatalog, saveCatalog } from './kaspiPriceList.js';
 import { config } from './config.js';
 import {
@@ -383,11 +390,12 @@ function normalizeSku(value) {
     return sku;
 }
 
-export function buildKaspiSkuSearch(sku, { kaspiId = '' } = {}) {
+export function buildKaspiSkuSearch(sku, { kaspiId = '', shopLink = '' } = {}) {
     const sourceSku = normalizeSku(sku);
     const skuWithoutSuffix = sourceSku.split(/[-–—]/)[0].trim();
     const articleCode = skuWithoutSuffix.split('_')[0].trim();
-    const savedKaspiId = clean(kaspiId);
+    const savedShopLink = clean(shopLink);
+    const savedKaspiId = clean(kaspiId) || extractKaspiIdFromShopLink(savedShopLink);
     const expectedProductCode = savedKaspiId || articleCode;
     const query = expectedProductCode;
 
@@ -404,6 +412,7 @@ export function buildKaspiSkuSearch(sku, { kaspiId = '' } = {}) {
         expectedProductCode,
         articleCode,
         savedKaspiId,
+        shopLink: savedShopLink,
     };
 }
 
@@ -419,6 +428,11 @@ function toPrice(value, label) {
 
 function clean(value) {
     return String(value ?? '').trim();
+}
+
+function extractKaspiIdFromShopLink(shopLink) {
+    const match = String(shopLink || '').match(/-(\d+)\/?(?:\?|$)/);
+    return match?.[1] || '';
 }
 
 function getEffectiveUploadPrice(product) {
@@ -491,8 +505,7 @@ export async function runDbAutoPricingForAll({
         (p) => p
             && (manualProductList || p.auto_pricing_enabled)
             && (p.shop_link || p.kaspi_id || p.sku || p.model)
-            && p.min_price != null
-            && p.max_price != null,
+            && (manualProductList || (p.min_price != null && p.max_price != null)),
     );
 
     const workerCount = normalizeConcurrency(concurrency, products.length);
@@ -547,120 +560,235 @@ export async function parseAndStoreAllProducts({
         : getAllProducts({}).filter((p) => p.shop_link || p.kaspi_id || p.sku || p.model);
     const workerCount = normalizeConcurrency(concurrency, products.length);
     const ownMerchantId = getSetting('merchant_id', process.env.KASPI_MERCHANT_ID || '').trim();
+    const parserSessionsByWorker = new Map();
 
-    logRuntime('product_parse', 'info', `Старт парсинга всех товаров: ${products.length} товаров, параллельность ${workerCount}`);
+    try {
+        logRuntime('product_parse', 'info', `Старт парсинга всех товаров: ${products.length} товаров, параллельность ${workerCount}`);
 
-    const resultsBySku = new Map();
-    let blockingError = null;
-    const emitProgress = async () => onProgress(buildSessionProgress(products, resultsBySku));
+        const resultsBySku = new Map();
+        let blockingError = null;
+        const emitProgress = async () => onProgress(buildSessionProgress(products, resultsBySku));
 
-    const parseProduct = async (product, workerIndex, label = '') => {
-        if (blockingError && stopOnBlock) {
-            return skippedParseResult(product.sku, blockingError);
-        }
-
-        try {
-            await onMessage(`[W${workerIndex + 1}] ${label}Парсю ${product.sku}.`);
-            const result = await parseAndStoreProductData({
-                sku: product.sku,
-                parser,
-                parserOptions,
-                ownMerchantId,
-                historyContext,
-            });
-            return {
-                sku: product.sku,
-                updated: true,
-                myPosition: result.product?.my_position || 0,
-                sellersCount: result.allSellers.length,
-                kaspiPrice: result.product?.last_kaspi_price || result.parsed?.price || 0,
-                firstPlacePrice: result.product?.first_place_price || 0,
-                oldUploadPrice: result.priceChange?.oldPrice ?? null,
-                newUploadPrice: result.priceChange?.newPrice ?? null,
-                competitorPrice: result.priceChange?.competitorPrice ?? null,
-                reason: result.priceChange?.reason ?? null,
-                retryAttempt: 0,
-            };
-        } catch (error) {
-            const message = error instanceof Error ? error.message : 'UNKNOWN_ERROR';
-            if (stopOnBlock && isBlockingParseError(message)) {
-                blockingError = message;
+        const parseProduct = async (
+            product,
+            workerIndex,
+            {
+                label = '',
+                allowMerchantCabinetFallback = true,
+            } = {},
+        ) => {
+            if (blockingError && stopOnBlock) {
+                return skippedParseResult(product.sku, blockingError);
             }
 
-            recordProductHistoryError({
-                sku: product.sku,
-                historyContext,
-                error: message,
-                parseMode: 'full',
+            try {
+                await onMessage(`[W${workerIndex + 1}] ${label}Парсю ${product.sku}.`);
+                const effectiveParser = await getParserForWorker({
+                    parser,
+                    parserOptions,
+                    workerIndex,
+                    sessionsByWorker: parserSessionsByWorker,
+                });
+                const result = await parseAndStoreProductData({
+                    sku: product.sku,
+                    parser: effectiveParser,
+                    parserOptions,
+                    ownMerchantId,
+                    historyContext,
+                    allowMerchantCabinetFallback,
+                });
+                return {
+                    sku: product.sku,
+                    updated: true,
+                    myPosition: result.product?.my_position || 0,
+                    sellersCount: result.allSellers.length,
+                    kaspiPrice: result.product?.last_kaspi_price || result.parsed?.price || 0,
+                    firstPlacePrice: result.product?.first_place_price || 0,
+                    oldUploadPrice: result.priceChange?.oldPrice ?? null,
+                    newUploadPrice: result.priceChange?.newPrice ?? null,
+                    competitorPrice: result.priceChange?.competitorPrice ?? null,
+                    reason: result.priceChange?.reason ?? null,
+                    retryAttempt: 0,
+                };
+            } catch (error) {
+                const message = error instanceof Error ? error.message : 'UNKNOWN_ERROR';
+                if (stopOnBlock && isBlockingParseError(message)) {
+                    blockingError = message;
+                }
+
+                recordProductHistoryError({
+                    sku: product.sku,
+                    historyContext,
+                    error: message,
+                    parseMode: 'full',
+                });
+
+                const result = {
+                    sku: product.sku,
+                    updated: false,
+                    error: message,
+                    retryAttempt: 0,
+                };
+                await onMessage(`${product.sku}: ${result.error}`);
+                return result;
+            }
+        };
+
+        const parseBatch = (
+            batch,
+            batchConcurrency,
+            {
+                label = '',
+                allowMerchantCabinetFallback = true,
+            } = {},
+        ) => processWithConcurrency(batch, async (product, _index, workerIndex) => {
+            const result = await parseProduct(product, workerIndex, {
+                label,
+                allowMerchantCabinetFallback,
             });
-
-            const result = {
-                sku: product.sku,
-                updated: false,
-                error: message,
-                retryAttempt: 0,
-            };
-            await onMessage(`${product.sku}: ${result.error}`);
+            resultsBySku.set(product.sku, result);
+            await emitProgress();
             return result;
+        }, { concurrency: batchConcurrency, delayMs });
+
+        let queue = products;
+        if (preflight && products.length) {
+            await onMessage('Проверяю доступность Kaspi Shop на одном товаре.');
+            const firstProduct = products[0];
+            const preflightResult = await parseProduct(firstProduct, 0, {
+                label: 'Проверка: ',
+                allowMerchantCabinetFallback: false,
+            });
+            resultsBySku.set(firstProduct.sku, preflightResult);
+            await emitProgress();
+            queue = products.slice(1);
+
+            if (blockingError && stopOnBlock) {
+                await onMessage(`Парсинг остановлен: ${shortError(blockingError)}`);
+                for (const product of queue) {
+                    resultsBySku.set(product.sku, skippedParseResult(product.sku, blockingError));
+                }
+                await emitProgress();
+                return products.map((product) => resultsBySku.get(product.sku));
+            }
         }
-    };
 
-    const parseBatch = (batch, batchConcurrency, label = '') => processWithConcurrency(batch, async (product, _index, workerIndex) => {
-        const result = await parseProduct(product, workerIndex, label);
-        resultsBySku.set(product.sku, result);
-        await emitProgress();
-        return result;
-    }, { concurrency: batchConcurrency, delayMs });
-
-    let queue = products;
-    if (preflight && products.length) {
-        await onMessage('Проверяю доступность Kaspi Shop на одном товаре.');
-        const firstProduct = products[0];
-        const preflightResult = await parseProduct(firstProduct, 0, 'Проверка: ');
-        resultsBySku.set(firstProduct.sku, preflightResult);
-        await emitProgress();
-        queue = products.slice(1);
+        await parseBatch(queue, workerCount, { allowMerchantCabinetFallback: false });
 
         if (blockingError && stopOnBlock) {
             await onMessage(`Парсинг остановлен: ${shortError(blockingError)}`);
-            for (const product of queue) {
-                resultsBySku.set(product.sku, skippedParseResult(product.sku, blockingError));
+            for (const product of products) {
+                if (!resultsBySku.has(product.sku)) {
+                    resultsBySku.set(product.sku, skippedParseResult(product.sku, blockingError));
+                }
             }
             await emitProgress();
             return products.map((product) => resultsBySku.get(product.sku));
         }
-    }
 
-    await parseBatch(queue, workerCount);
+        let retryProducts = products.filter((product) => isRetryableParseError(resultsBySku.get(product.sku)?.error));
 
-    if (blockingError && stopOnBlock) {
-        await onMessage(`Парсинг остановлен: ${shortError(blockingError)}`);
-        for (const product of products) {
-            if (!resultsBySku.has(product.sku)) {
-                resultsBySku.set(product.sku, skippedParseResult(product.sku, blockingError));
+        for (let attempt = 1; attempt <= retryAttempts && retryProducts.length; attempt += 1) {
+            const currentRetryConcurrency = normalizeConcurrency(retryConcurrency, retryProducts.length);
+            await onMessage(`Повтор ${attempt}/${retryAttempts}: ${retryProducts.length} товаров, параллельность ${currentRetryConcurrency}.`);
+            await delay(retryDelayMs * attempt);
+
+            const retryResults = await parseBatch(retryProducts, currentRetryConcurrency, {
+                label: `Повтор ${attempt}: `,
+                allowMerchantCabinetFallback: false,
+            });
+            for (const result of retryResults) {
+                resultsBySku.set(result.sku, { ...result, retryAttempt: attempt });
+            }
+            await emitProgress();
+
+            retryProducts = retryProducts.filter((product) => isRetryableParseError(resultsBySku.get(product.sku)?.error));
+        }
+
+        const merchantCabinetFallbackCandidates = collectMerchantCabinetFallbackCandidates(products, resultsBySku);
+        if (merchantCabinetFallbackCandidates.length) {
+            const uniqueArticles = [...new Set(merchantCabinetFallbackCandidates.map((item) => item.article))];
+            await onMessage(`Пробую добрать ${merchantCabinetFallbackCandidates.length} товаров через кабинет Kaspi одной сессией (${uniqueArticles.length} артикулов).`);
+
+            let merchantCabinetBatch = null;
+            try {
+                merchantCabinetBatch = await resolveKaspiProductCardsFromMerchantCabinetBatch({
+                    articles: uniqueArticles,
+                    downloadDir: config.kaspiDownloadDir,
+                    sessionDir: config.kaspiSessionDir,
+                    onMessage: async (message) => onMessage(`[ЛК] ${message}`),
+                });
+            } catch (error) {
+                const batchErrorMessage = error instanceof Error ? error.message : String(error);
+                await onMessage(`Пакетный заход в ЛК не удался: ${batchErrorMessage}`);
+                for (const candidate of merchantCabinetFallbackCandidates) {
+                    const previousResult = resultsBySku.get(candidate.product.sku) || {
+                        sku: candidate.product.sku,
+                        updated: false,
+                        retryAttempt: 0,
+                        error: batchErrorMessage,
+                    };
+                    resultsBySku.set(candidate.product.sku, {
+                        ...previousResult,
+                        error: appendMerchantCabinetError(previousResult.error, batchErrorMessage),
+                    });
+                }
+                await emitProgress();
+                return products.map((product) => resultsBySku.get(product.sku));
+            }
+
+            const batchItemsByArticle = new Map(
+                (merchantCabinetBatch?.items || []).map((item) => [clean(item.article), item]),
+            );
+            const reparsedProducts = [];
+
+            for (const candidate of merchantCabinetFallbackCandidates) {
+                const resolved = batchItemsByArticle.get(candidate.article);
+                if (!resolved?.kaspiId) {
+                    const previousResult = resultsBySku.get(candidate.product.sku) || {
+                        sku: candidate.product.sku,
+                        updated: false,
+                        retryAttempt: 0,
+                        error: resolved?.error || 'Товар не найден в кабинете Kaspi.',
+                    };
+                    resultsBySku.set(candidate.product.sku, {
+                        ...previousResult,
+                        error: appendMerchantCabinetError(previousResult.error, resolved?.error || 'Товар не найден в кабинете Kaspi.'),
+                    });
+                    continue;
+                }
+
+                upsertProduct({
+                    sku: candidate.product.sku,
+                    kaspi_id: resolved.kaspiId,
+                    shop_link: resolved.shopLink || null,
+                });
+                reparsedProducts.push(candidate.product);
+            }
+
+            await emitProgress();
+
+            if (reparsedProducts.length) {
+                const reparseConcurrency = normalizeConcurrency(workerCount, reparsedProducts.length);
+                await onMessage(`Повторно парсю ${reparsedProducts.length} товаров после одного входа в ЛК, параллельность ${reparseConcurrency}.`);
+                const reparsedResults = await parseBatch(reparsedProducts, reparseConcurrency, {
+                    label: 'После ЛК: ',
+                    allowMerchantCabinetFallback: false,
+                });
+                for (const result of reparsedResults) {
+                    resultsBySku.set(result.sku, {
+                        ...result,
+                        retryAttempt: Math.max(Number(resultsBySku.get(result.sku)?.retryAttempt || 0), 1),
+                    });
+                }
+                await emitProgress();
             }
         }
-        await emitProgress();
+
         return products.map((product) => resultsBySku.get(product.sku));
+    } finally {
+        await closeWorkerParserSessions(parserSessionsByWorker);
     }
-
-    let retryProducts = products.filter((product) => isRetryableParseError(resultsBySku.get(product.sku)?.error));
-
-    for (let attempt = 1; attempt <= retryAttempts && retryProducts.length; attempt += 1) {
-        const currentRetryConcurrency = normalizeConcurrency(retryConcurrency, retryProducts.length);
-        await onMessage(`Повтор ${attempt}/${retryAttempts}: ${retryProducts.length} товаров, параллельность ${currentRetryConcurrency}.`);
-        await delay(retryDelayMs * attempt);
-
-        const retryResults = await parseBatch(retryProducts, currentRetryConcurrency, `Повтор ${attempt}: `);
-        for (const result of retryResults) {
-            resultsBySku.set(result.sku, { ...result, retryAttempt: attempt });
-        }
-        await emitProgress();
-
-        retryProducts = retryProducts.filter((product) => isRetryableParseError(resultsBySku.get(product.sku)?.error));
-    }
-
-    return products.map((product) => resultsBySku.get(product.sku));
 }
 
 function buildSessionProgress(products, resultsBySku) {
@@ -763,30 +891,38 @@ export async function parseAndStoreProductData({
     parserOptions = {},
     ownMerchantId = getSetting('merchant_id', process.env.KASPI_MERCHANT_ID || '').trim(),
     historyContext = null,
+    allowMerchantCabinetFallback = true,
 } = {}) {
     const product = getProduct(sku);
     if (!product) throw new Error(`Товар ${sku} не найден.`);
     const previousUploadPrice = getEffectiveUploadPrice(product);
-    const skuSearch = buildKaspiSkuSearch(product.sku, { kaspiId: product.kaspi_id });
+    const skuSearch = buildKaspiSkuSearch(product.sku, {
+        kaspiId: product.kaspi_id,
+        shopLink: product.shop_link,
+    });
 
     let parsed;
     let activeSkuSearch = skuSearch;
     try {
         parsed = await parser({
             kaspiId: activeSkuSearch.savedKaspiId || '',
+            shopLink: activeSkuSearch.shopLink || '',
             query: activeSkuSearch.query,
             sourceSku: product.sku,
             expectedProductCode: activeSkuSearch.expectedProductCode,
         }, parserOptions);
     } catch (error) {
-        if (shouldTryMerchantCabinetFallback(error)) {
+        if (allowMerchantCabinetFallback && shouldTryMerchantCabinetFallback(error)) {
             const cabinetFallback = await tryResolveKaspiFromMerchantCabinet({
                 product,
                 skuSearch: activeSkuSearch,
             });
 
             if (cabinetFallback?.kaspiId) {
-                activeSkuSearch = buildKaspiSkuSearch(product.sku, { kaspiId: cabinetFallback.kaspiId });
+                activeSkuSearch = buildKaspiSkuSearch(product.sku, {
+                    kaspiId: cabinetFallback.kaspiId,
+                    shopLink: cabinetFallback.shopLink,
+                });
                 try {
                     parsed = await parser({
                         kaspiId: cabinetFallback.kaspiId,
@@ -814,13 +950,22 @@ export async function parseAndStoreProductData({
         }
     }
 
-    if ((!parsed?.kaspiId || !parsed?.shopLink) && activeSkuSearch.articleCode) {
+    parsed = {
+        ...parsed,
+        kaspiId: parsed?.kaspiId || activeSkuSearch.savedKaspiId || '',
+        shopLink: parsed?.shopLink || activeSkuSearch.shopLink || '',
+    };
+
+    if (allowMerchantCabinetFallback && !parsed?.kaspiId && activeSkuSearch.articleCode) {
         const cabinetFallback = await tryResolveKaspiFromMerchantCabinet({
             product,
             skuSearch: activeSkuSearch,
         });
         if (cabinetFallback?.kaspiId) {
-            activeSkuSearch = buildKaspiSkuSearch(product.sku, { kaspiId: cabinetFallback.kaspiId });
+            activeSkuSearch = buildKaspiSkuSearch(product.sku, {
+                kaspiId: cabinetFallback.kaspiId,
+                shopLink: cabinetFallback.shopLink,
+            });
             parsed = await parser({
                 kaspiId: cabinetFallback.kaspiId,
                 shopLink: cabinetFallback.shopLink,
@@ -950,6 +1095,70 @@ async function tryResolveKaspiFromMerchantCabinet({ product, skuSearch }) {
         });
         return null;
     }
+}
+
+function collectMerchantCabinetFallbackCandidates(products, resultsBySku) {
+    return products
+        .map((product) => {
+            const result = resultsBySku.get(product.sku);
+            if (!shouldTryMerchantCabinetFallback(result?.error)) {
+                return null;
+            }
+
+            const skuSearch = buildKaspiSkuSearch(product.sku, {
+                kaspiId: product.kaspi_id,
+                shopLink: product.shop_link,
+            });
+            const article = clean(skuSearch.articleCode);
+            if (!article) {
+                return null;
+            }
+
+            return {
+                product,
+                article,
+            };
+        })
+        .filter(Boolean);
+}
+
+function appendMerchantCabinetError(baseError, merchantCabinetError) {
+    const baseMessage = String(baseError || '').trim();
+    const cabinetMessage = String(merchantCabinetError || '').trim();
+
+    if (!baseMessage) {
+        return cabinetMessage;
+    }
+
+    if (!cabinetMessage || baseMessage.includes(cabinetMessage)) {
+        return baseMessage;
+    }
+
+    return `${baseMessage} | ЛК: ${cabinetMessage}`;
+}
+
+async function getParserForWorker({
+    parser,
+    parserOptions,
+    workerIndex,
+    sessionsByWorker,
+}) {
+    if (parser !== parseKaspiProductById) {
+        return parser;
+    }
+
+    if (!sessionsByWorker.has(workerIndex)) {
+        sessionsByWorker.set(workerIndex, createKaspiProductParserSession(parserOptions));
+    }
+
+    const session = await sessionsByWorker.get(workerIndex);
+    return async (target, options = {}) => session.parse(target, options);
+}
+
+async function closeWorkerParserSessions(sessionsByWorker) {
+    const sessions = await Promise.all([...sessionsByWorker.values()]);
+    await Promise.all(sessions.map((session) => session?.close?.().catch(() => null)));
+    sessionsByWorker.clear();
 }
 
 export function calculateUploadPriceFromSellers({

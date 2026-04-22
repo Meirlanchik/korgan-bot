@@ -133,8 +133,7 @@ export async function runAutoPricingNow({
   const products = sourceProducts.filter(
     (p) => (manualProductList || p.auto_pricing_enabled)
       && (p.shop_link || p.kaspi_id || p.sku || p.model)
-      && p.min_price != null
-      && p.max_price != null,
+      && (manualProductList || (p.min_price != null && p.max_price != null)),
   );
   const session = startParseSession({
     type,
@@ -757,6 +756,15 @@ async function executeKaspiDownloadTask({
   try {
     await pushMessage('Открываю кабинет продавца и загружаю товары из Kaspi.');
     const result = await pullKaspiPriceList(pushMessage, waitForKaspiOtp);
+    const cardBuildInfo = queueImportedProductsForCardBuild(result.importedSkus, {
+      triggerSource: 'import',
+      logPrefix: 'Автоформирование карточек новых товаров из Kaspi',
+    });
+    if (cardBuildInfo.started && cardBuildInfo.session) {
+      await pushMessage(`Для новых товаров из Kaspi сразу запущено формирование карточек. Сессия #${cardBuildInfo.session.id}.`);
+    } else if (cardBuildInfo.queuedCount) {
+      await pushMessage(`Новые товары из Kaspi поставлены в очередь на формирование карточек: ${cardBuildInfo.queuedCount}.`);
+    }
     finishParseSession(session.id, {
       status: 'success',
       totalCount: Number(result.totalProcessed || 0),
@@ -774,11 +782,13 @@ async function executeKaspiDownloadTask({
           statusText: buildKaspiDownloadSummary(result, triggerSource),
         },
         result,
+        cardBuildInfo,
       },
     });
     logRuntime('pull_kaspi', 'success', buildKaspiDownloadSummary(result, triggerSource), {
       triggerSource,
       result,
+      cardBuildInfo,
     });
     return result;
   } catch (error) {
@@ -1138,7 +1148,7 @@ function tryStartQueuedCardBuild() {
     return null;
   }
 
-  if (autoPricingInProgress || fullParseInProgress || kaspiPushInProgress) {
+  if (autoPricingInProgress || fullParseInProgress || kaspiPullInProgress || kaspiPushInProgress) {
     return null;
   }
 
@@ -1171,4 +1181,38 @@ function normalizeQueuedProducts(products) {
       .filter((product) => product && String(product.sku || '').trim())
       .map((product) => ({ ...product, sku: String(product.sku || '').trim() }))
     : [];
+}
+
+function queueImportedProductsForCardBuild(importedSkus = [], {
+  triggerSource = 'import',
+  logPrefix = 'Автоформирование карточек новых товаров',
+} = {}) {
+  const skuSet = new Set(
+    (Array.isArray(importedSkus) ? importedSkus : [importedSkus])
+      .map((sku) => String(sku || '').trim())
+      .filter(Boolean),
+  );
+
+  if (!skuSet.size) {
+    return {
+      importedCount: 0,
+      queuedCount: 0,
+      started: false,
+      session: null,
+    };
+  }
+
+  const products = getAllProducts({}).filter((product) => skuSet.has(String(product?.sku || '').trim()));
+  const queueResult = queueProductCardBuild({
+    products,
+    triggerSource,
+    logPrefix,
+  });
+
+  return {
+    importedCount: products.length,
+    queuedCount: queueResult.queuedCount || 0,
+    started: Boolean(queueResult.started),
+    session: queueResult.session || null,
+  };
 }

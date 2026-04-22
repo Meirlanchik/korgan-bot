@@ -84,6 +84,10 @@ export async function pullKaspiPriceList(onMessage, requestOtp) {
     offersCount: xmlResult.offersCount,
     imported: Number(activeImport.imported || 0) + Number(archiveImport.imported || 0),
     updated: Number(activeImport.updated || 0) + Number(archiveImport.updated || 0),
+    importedSkus: [...new Set([
+      ...(Array.isArray(activeImport.importedSkus) ? activeImport.importedSkus : []),
+      ...(Array.isArray(archiveImport.importedSkus) ? archiveImport.importedSkus : []),
+    ])],
     activeImported: activeImport.imported,
     activeUpdated: activeImport.updated,
     archiveImported: archiveImport.imported,
@@ -160,7 +164,7 @@ export async function readKaspiUploadStatus(onMessage, requestOtp) {
 export async function generateAndSaveXml() {
   const products = getProductsForXml();
   const merchantId = getSetting('merchant_id', defaultConfigFromEnv().merchantId);
-  const company = defaultConfigFromEnv().company;
+  const company = getSetting('merchant_name', '') || merchantId;
 
   const xml = buildKaspiXml({
     company,

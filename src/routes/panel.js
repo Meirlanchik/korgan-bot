@@ -39,9 +39,11 @@ import { renderHistoryPage } from '../views/history.js';
 import { renderProductsPage } from '../views/products.js';
 import { renderProductDetailPage } from '../views/productDetail.js';
 import { renderSettingsPage } from '../views/settings.js';
+import { renderProfilePage } from '../views/profile.js';
 import { renderFinancePage } from '../views/finance.js';
 import { renderParseSessionDetailPage } from '../views/parseSessions.js';
 import { renderXmlUploadPage } from '../views/xmlUpload.js';
+import { setPanelAuthCookie } from '../panelAuth.js';
 import {
   getFinanceDashboard,
   saveFinanceProductInputs,
@@ -129,10 +131,15 @@ router.get('/', async (req, res, next) => {
 
 router.get('/products', (req, res) => {
   try {
-    const { sort, order, search, available } = req.query;
-    const products = getAllProducts({ sort, order, search, available });
+    const { sort, order, search, available, category } = req.query;
+    const products = getAllProducts({ sort, order });
     const merchantId = getSetting('merchant_id', defaultConfigFromEnv().merchantId);
     const sessions = getParseSessions({ limit: 50 });
+    const categories = [...new Set(
+      getAllProducts({ sort: 'category', order: 'asc' })
+        .map((product) => String(product.category || '').trim())
+        .filter(Boolean),
+    )];
     const priceCalculationSessions = sessions
       .filter((session) => ['light_parse', 'auto_pricing'].includes(session.type));
     const currentPriceCalculationSession = priceCalculationSessions.find((session) => session.status === 'running') || null;
@@ -151,6 +158,8 @@ router.get('/products', (req, res) => {
       order: order || 'asc',
       search: search || '',
       availableFilter: available ?? '',
+      categoryFilter: category ?? '',
+      categories,
       merchantId,
       priceCalculationState: getAutoPricingSchedulerState(),
       latestPriceCalculationSession: priceCalculationSessions[0] || null,
@@ -172,8 +181,16 @@ router.post('/products/parse-all', (req, res) => {
       logPrefix: 'Сформировать карточки всех товаров',
     });
 
-    res.redirect(303, '/panel/products?message=' + encodeURIComponent(`Формирование карточек всех товаров запущено. Сессия #${session.id}.`));
+    const message = `Формирование карточек всех товаров запущено. Сессия #${session.id}.`;
+    if (sendActionSuccess(req, res, {
+      message,
+      redirectTo: '/panel/products',
+      status: 202,
+      data: { sessionId: session.id },
+    })) return;
+    res.redirect(303, '/panel/products?message=' + encodeURIComponent(message));
   } catch (error) {
+    if (sendActionError(req, res, error, { redirectTo: '/panel/products' })) return;
     res.redirect(303, '/panel/products?error=' + encodeURIComponent(error.message));
   }
 });
@@ -200,8 +217,16 @@ router.post('/products/bulk/parse', (req, res) => {
       logPrefix: 'Сформировать карточки выбранных товаров',
     });
 
-    res.redirect(303, `/panel/products?message=${encodeURIComponent(`Формирование карточек выбранных товаров запущено. Сессия #${session.id}.`)}`);
+    const message = `Формирование карточек выбранных товаров запущено. Сессия #${session.id}.`;
+    if (sendActionSuccess(req, res, {
+      message,
+      redirectTo: '/panel/products',
+      status: 202,
+      data: { sessionId: session.id, count: products.length },
+    })) return;
+    res.redirect(303, `/panel/products?message=${encodeURIComponent(message)}`);
   } catch (error) {
+    if (sendActionError(req, res, error, { redirectTo: '/panel/products' })) return;
     res.redirect(303, `/panel/products?error=${encodeURIComponent(error.message)}`);
   }
 });
@@ -243,8 +268,16 @@ router.post('/products/bulk/light-parse', (req, res) => {
       logRuntime('auto_pricing', 'error', `Ручной расчет цены завершился ошибкой: ${error.message}`);
     });
 
-    res.redirect(303, `/panel/products?message=${encodeURIComponent(`Расчет цены запущен: ${products.length} товаров. Смотрите сессии.`)}`);
+    const message = `Расчет цены запущен: ${products.length} товаров. Смотрите сессии.`;
+    if (sendActionSuccess(req, res, {
+      message,
+      redirectTo: '/panel/products',
+      status: 202,
+      data: { count: products.length },
+    })) return;
+    res.redirect(303, `/panel/products?message=${encodeURIComponent(message)}`);
   } catch (error) {
+    if (sendActionError(req, res, error, { redirectTo: '/panel/products' })) return;
     res.redirect(303, `/panel/products?error=${encodeURIComponent(error.message)}`);
   }
 });
@@ -253,59 +286,43 @@ router.post('/products/delete', async (req, res) => {
   const sku = String(req.body.sku || '').trim();
   try {
     if (!sku) throw new Error('Не указан SKU для удаления.');
-    if (isFullParseRunning()) {
-      throw new Error('Нельзя удалять товары во время парсинга.');
-    }
-    if (isAutoPricingRunning()) {
-      throw new Error('Нельзя удалять товары во время расчета цены.');
-    }
-    if (isKaspiPullRunning()) {
-      throw new Error('Нельзя удалять товары во время загрузки из Kaspi.');
-    }
-    if (isKaspiPushRunning()) {
-      throw new Error('Нельзя удалять товары во время загрузки в Kaspi.');
-    }
-
-    const result = deleteProduct(sku);
-    if (!result.changes) {
-      throw new Error(`Товар ${sku} не найден или уже удален.`);
-    }
+    assertProductsCanBeDeleted();
+    const deleted = deleteProductsBySkus([sku]);
     await generateAndSaveXml().catch(() => { });
     logRuntime('product_update', 'success', `Удален товар ${sku}`);
+    if (sendActionSuccess(req, res, {
+      message: `Товар ${sku} удален`,
+      redirectTo: '/panel/products',
+      data: { sku, deleted },
+    })) return;
     res.redirect(`/panel/products?message=${encodeURIComponent(`Товар ${sku} удален`)}`);
   } catch (error) {
+    if (sendActionError(req, res, error, {
+      redirectTo: '/panel/products',
+      data: { sku },
+    })) return;
     res.redirect(`/panel/products?error=${encodeURIComponent(error.message)}`);
   }
 });
 
 router.post('/products/bulk/delete', async (req, res) => {
   try {
-    if (isFullParseRunning()) {
-      throw new Error('Нельзя удалять товары во время парсинга.');
-    }
-    if (isAutoPricingRunning()) {
-      throw new Error('Нельзя удалять товары во время расчета цены.');
-    }
-    if (isKaspiPullRunning()) {
-      throw new Error('Нельзя удалять товары во время загрузки из Kaspi.');
-    }
-    if (isKaspiPushRunning()) {
-      throw new Error('Нельзя удалять товары во время загрузки в Kaspi.');
-    }
-
-    const skus = req.body.skus ? (Array.isArray(req.body.skus) ? req.body.skus : [req.body.skus]) : [];
+    assertProductsCanBeDeleted();
+    const skus = asArray(req.body.skus).map((sku) => String(sku || '').trim()).filter(Boolean);
     if (!skus.length) throw new Error('Выберите товары');
 
-    let deleted = 0;
-    for (const sku of skus) {
-      const result = deleteProduct(String(sku || '').trim());
-      deleted += Number(result.changes || 0);
-    }
+    const deleted = deleteProductsBySkus(skus);
 
     await generateAndSaveXml().catch(() => { });
     logRuntime('product_update', 'success', `Удалено товаров: ${deleted}`, { skus, deleted });
+    if (sendActionSuccess(req, res, {
+      message: `Удалено ${deleted} товаров`,
+      redirectTo: '/panel/products',
+      data: { deleted, skus },
+    })) return;
     res.redirect(`/panel/products?message=${encodeURIComponent(`Удалено ${deleted} товаров`)}`);
   } catch (error) {
+    if (sendActionError(req, res, error, { redirectTo: '/panel/products' })) return;
     res.redirect(`/panel/products?error=${encodeURIComponent(error.message)}`);
   }
 });
@@ -351,10 +368,12 @@ router.post('/products/:sku', async (req, res) => {
       throw new Error(`Служебный путь /products/${sku} нельзя сохранить как SKU.`);
     }
     const formData = productFromForm(req.body);
+    validateProductFormData(formData);
     upsertProduct({ ...formData, sku });
 
     // Handle warehouses
     const warehouses = warehousesFromForm(req.body);
+    validateWarehouses(warehouses);
     if (warehouses.length) {
       deleteWarehousesForProduct(sku);
       for (const w of warehouses) {
@@ -367,9 +386,18 @@ router.post('/products/:sku', async (req, res) => {
     // Regenerate XML
     await generateAndSaveXml().catch(() => { });
     logRuntime('product_update', 'success', `Товар ${sku} сохранен`);
+    if (sendActionSuccess(req, res, {
+      message: 'Товар сохранен',
+      redirectTo: `/panel/products/${encodeURIComponent(sku)}`,
+      data: { sku },
+    })) return;
     res.redirect(`/panel/products/${encodeURIComponent(sku)}?message=${encodeURIComponent('Товар сохранен')}`);
   } catch (error) {
     logRuntime('product_update', 'error', `Ошибка сохранения ${sku}: ${error.message}`);
+    if (sendActionError(req, res, error, {
+      redirectTo: `/panel/products/${encodeURIComponent(sku)}`,
+      data: { sku },
+    })) return;
     res.redirect(`/panel/products/${encodeURIComponent(sku)}?error=${encodeURIComponent(error.message)}`);
   }
 });
@@ -435,6 +463,11 @@ router.post('/products/:sku/parse', async (req, res) => {
         }],
       },
     });
+    if (sendActionSuccess(req, res, {
+      message: 'Карточка товара обновлена',
+      redirectTo: `/panel/products/${encodeURIComponent(req.params.sku)}`,
+      data: { sku: req.params.sku, sessionId: session.id },
+    })) return;
     res.redirect(`/panel/products/${encodeURIComponent(req.params.sku)}?message=${encodeURIComponent('Карточка товара обновлена')}`);
   } catch (error) {
     if (session) {
@@ -465,31 +498,30 @@ router.post('/products/:sku/parse', async (req, res) => {
       });
     }
     logRuntime('product_parse', 'error', `Ошибка парсинга ${req.params.sku}: ${error.message}`);
+    if (sendActionError(req, res, error, {
+      redirectTo: `/panel/products/${encodeURIComponent(req.params.sku)}`,
+      data: { sku: req.params.sku, sessionId: session?.id || null },
+    })) return;
     res.redirect(`/panel/products/${encodeURIComponent(req.params.sku)}?error=${encodeURIComponent(error.message)}`);
   }
 });
 
 router.post('/products/:sku/delete', async (req, res) => {
   try {
-    if (isFullParseRunning()) {
-      throw new Error('Нельзя удалять товары во время парсинга.');
-    }
-    if (isAutoPricingRunning()) {
-      throw new Error('Нельзя удалять товары во время расчета цены.');
-    }
-    if (isKaspiPullRunning()) {
-      throw new Error('Нельзя удалять товары во время загрузки из Kaspi.');
-    }
-    if (isKaspiPushRunning()) {
-      throw new Error('Нельзя удалять товары во время загрузки в Kaspi.');
-    }
-    const result = deleteProduct(req.params.sku);
-    if (!result.changes) {
-      throw new Error(`Товар ${req.params.sku} не найден или уже удален.`);
-    }
+    assertProductsCanBeDeleted();
+    deleteProductsBySkus([req.params.sku]);
     await generateAndSaveXml().catch(() => { });
+    if (sendActionSuccess(req, res, {
+      message: `Товар ${req.params.sku} удален`,
+      redirectTo: '/panel/products',
+      data: { sku: req.params.sku, deleted: 1 },
+    })) return;
     res.redirect(`/panel/products?message=${encodeURIComponent(`Товар ${req.params.sku} удален`)}`);
   } catch (error) {
+    if (sendActionError(req, res, error, {
+      redirectTo: '/panel/products',
+      data: { sku: req.params.sku },
+    })) return;
     res.redirect(`/panel/products?error=${encodeURIComponent(error.message)}`);
   }
 });
@@ -519,8 +551,17 @@ router.post('/products/:sku/auto-price', async (req, res) => {
     const message = result.updated
       ? `SKU ${result.sku}: цена ${result.oldPrice} → ${result.newPrice}`
       : `SKU ${result.sku}: цена уже ${result.newPrice}`;
+    if (sendActionSuccess(req, res, {
+      message,
+      redirectTo: `/panel/products/${encodeURIComponent(req.params.sku)}`,
+      data: { sku: req.params.sku, result },
+    })) return;
     res.redirect(`/panel/products/${encodeURIComponent(req.params.sku)}?message=${encodeURIComponent(message)}`);
   } catch (error) {
+    if (sendActionError(req, res, error, {
+      redirectTo: `/panel/products/${encodeURIComponent(req.params.sku)}`,
+      data: { sku: req.params.sku },
+    })) return;
     res.redirect(`/panel/products/${encodeURIComponent(req.params.sku)}?error=${encodeURIComponent(error.message)}`);
   }
 });
@@ -529,10 +570,20 @@ router.post('/products/:sku/toggle-available', async (req, res) => {
   try {
     const product = getProduct(req.params.sku);
     if (!product) throw new Error('Товар не найден');
-    upsertProduct({ sku: req.params.sku, available: product.available ? 0 : 1 });
+    const nextAvailable = product.available ? 0 : 1;
+    upsertProduct({ sku: req.params.sku, available: nextAvailable });
     await generateAndSaveXml().catch(() => { });
+    if (sendActionSuccess(req, res, {
+      message: product.available ? 'Снят с продажи' : 'Выставлен в продажу',
+      redirectTo: `/panel/products/${encodeURIComponent(req.params.sku)}`,
+      data: { sku: req.params.sku, available: nextAvailable },
+    })) return;
     res.redirect(`/panel/products/${encodeURIComponent(req.params.sku)}?message=${encodeURIComponent(product.available ? 'Снят с продажи' : 'Выставлен в продажу')}`);
   } catch (error) {
+    if (sendActionError(req, res, error, {
+      redirectTo: `/panel/products/${encodeURIComponent(req.params.sku)}`,
+      data: { sku: req.params.sku },
+    })) return;
     res.redirect(`/panel/products/${encodeURIComponent(req.params.sku)}?error=${encodeURIComponent(error.message)}`);
   }
 });
@@ -560,6 +611,7 @@ router.post('/products/bulk/update', async (req, res) => {
     if (req.body.bulkPreOrder !== undefined && req.body.bulkPreOrder !== '') {
       updates.pre_order = Number(req.body.bulkPreOrder);
     }
+    validateBulkProductUpdates(updates);
 
     bulkUpdateProducts(skus, updates);
     applyBulkWarehouseUpdates({
@@ -571,8 +623,14 @@ router.post('/products/bulk/update', async (req, res) => {
       recalculateUploadPriceForSku({ sku });
     }
     await generateAndSaveXml().catch(() => { });
+    if (sendActionSuccess(req, res, {
+      message: `Обновлено ${skus.length} товаров`,
+      redirectTo: '/panel/products',
+      data: { skus, updates },
+    })) return;
     res.redirect(`/panel/products?message=${encodeURIComponent(`Обновлено ${skus.length} товаров`)}`);
   } catch (error) {
+    if (sendActionError(req, res, error, { redirectTo: '/panel/products' })) return;
     res.redirect(`/panel/products?error=${encodeURIComponent(error.message)}`);
   }
 });
@@ -652,7 +710,11 @@ router.post('/xml/upload', (req, res, next) => getUpload().single('xmlFile')(req
     if (ext !== '.xml') throw new Error('Нужен файл с расширением .xml.');
 
     const xmlContent = await fs.readFile(file.path, 'utf8');
-    const catalog = parseKaspiCatalog(xmlContent);
+    const xmlWarnings = [];
+    const catalog = parseKaspiCatalog(xmlContent, {
+      modelFallbackFromSku: true,
+      warnings: xmlWarnings,
+    });
     const dbResult = importFromCatalog(catalog, { importedAvailable: 0 });
     await generateAndSaveXml();
     const cardBuildInfo = queueNewProductCardBuilds(dbResult.importedSkus, {
@@ -664,8 +726,10 @@ router.post('/xml/upload', (req, res, next) => getUpload().single('xmlFile')(req
       importedSkus: dbResult.importedSkus,
       updatedSkus: dbResult.updatedSkus,
       cardBuildInfo,
+      xmlWarnings,
     });
-    res.redirect(303, `/panel/products?message=${encodeURIComponent(`XML загружен: новых ${dbResult.imported}, обновлено ${dbResult.updated}. Товары сразу поставлены "не в продаже". ${formatCardBuildMessage(cardBuildInfo)}`.trim())}`);
+    const warningSuffix = xmlWarnings.length ? ` Исправлено предупреждений: ${xmlWarnings.length}.` : '';
+    res.redirect(303, `/panel/products?message=${encodeURIComponent(`XML загружен: новых ${dbResult.imported}, обновлено ${dbResult.updated}. Товары сразу поставлены "не в продаже".${warningSuffix} ${formatCardBuildMessage(cardBuildInfo)}`.trim())}`);
   } catch (error) {
     res.redirect(303, `/panel/xml?error=${encodeURIComponent(error.message)}`);
   } finally {
@@ -720,9 +784,19 @@ router.post('/kaspi/download', async (req, res) => {
     task.promise.catch((error) => {
       logRuntime('pull_kaspi', 'error', `Фоновая загрузка товаров из Kaspi завершилась ошибкой: ${error.message}`);
     });
-    res.redirect(303, `${returnBackPath(req, '/panel/products')}?message=${encodeURIComponent(`Загрузка товаров из Kaspi запущена. Сессия #${task.session.id}.`)}`);
+    const redirectTo = returnBackPath(req, '/panel/products');
+    const message = `Загрузка товаров из Kaspi запущена. Сессия #${task.session.id}.`;
+    if (sendActionSuccess(req, res, {
+      message,
+      redirectTo,
+      status: 202,
+      data: { sessionId: task.session.id },
+    })) return;
+    res.redirect(303, `${redirectTo}?message=${encodeURIComponent(message)}`);
   } catch (error) {
-    res.redirect(303, `${returnBackPath(req, '/panel/')}?error=${encodeURIComponent(error.message)}`);
+    const redirectTo = returnBackPath(req, '/panel/');
+    if (sendActionError(req, res, error, { redirectTo })) return;
+    res.redirect(303, `${redirectTo}?error=${encodeURIComponent(error.message)}`);
   }
 });
 
@@ -735,9 +809,19 @@ router.post('/kaspi/upload', async (req, res) => {
     task.promise.catch((error) => {
       logRuntime('push_kaspi', 'error', `Фоновая загрузка в Kaspi завершилась ошибкой: ${error.message}`);
     });
-    res.redirect(303, `${returnBackPath(req, '/panel/')}?message=${encodeURIComponent(`Загрузка в Kaspi запущена. Сессия #${task.session.id}.`)}`);
+    const redirectTo = returnBackPath(req, '/panel/');
+    const message = `Загрузка в Kaspi запущена. Сессия #${task.session.id}.`;
+    if (sendActionSuccess(req, res, {
+      message,
+      redirectTo,
+      status: 202,
+      data: { sessionId: task.session.id },
+    })) return;
+    res.redirect(303, `${redirectTo}?message=${encodeURIComponent(message)}`);
   } catch (error) {
-    res.redirect(303, `/panel/?error=${encodeURIComponent(error.message)}`);
+    const redirectTo = returnBackPath(req, '/panel/');
+    if (sendActionError(req, res, error, { redirectTo })) return;
+    res.redirect(303, `${redirectTo}?error=${encodeURIComponent(error.message)}`);
   }
 });
 
@@ -758,7 +842,13 @@ router.post('/auto-pricing/run', (req, res) => {
       throw new Error('Сейчас выполняется загрузка в Kaspi. Дождитесь завершения.');
     }
 
-    runAutoPricingNow({ triggerSource: 'manual' })
+    const products = getAllProducts({})
+      .filter((product) => product && (product.shop_link || product.kaspi_id || product.sku || product.model));
+    if (!products.length) {
+      throw new Error('Нет товаров для расчета цены.');
+    }
+
+    runAutoPricingNow({ products, triggerSource: 'manual' })
       .then((results) => {
         const updated = results.filter((r) => r.updated).length;
         const failed = results.filter((r) => r.error).length;
@@ -768,9 +858,14 @@ router.post('/auto-pricing/run', (req, res) => {
         logRuntime('auto_pricing', 'error', `Ручной расчет цены завершился ошибкой: ${error.message}`);
       });
 
-    res.redirect(303, `${autoPricingReturnPath(req)}?message=${encodeURIComponent('Расчет цены запущен. Прогресс смотрите в сессиях.')}`);
+    const redirectTo = autoPricingReturnPath(req);
+    const message = 'Расчет цены запущен. Прогресс смотрите в сессиях.';
+    if (sendActionSuccess(req, res, { message, redirectTo, status: 202 })) return;
+    res.redirect(303, `${redirectTo}?message=${encodeURIComponent(message)}`);
   } catch (error) {
-    res.redirect(303, `${autoPricingReturnPath(req)}?error=${encodeURIComponent(error.message)}`);
+    const redirectTo = autoPricingReturnPath(req);
+    if (sendActionError(req, res, error, { redirectTo })) return;
+    res.redirect(303, `${redirectTo}?error=${encodeURIComponent(error.message)}`);
   }
 });
 
@@ -787,7 +882,25 @@ router.get('/settings', (req, res) => {
         kaspiPull: getKaspiDownloadSchedulerState(),
         kaspiPush: getKaspiUploadSchedulerState(),
       },
-      ignoredMerchantIds: parseMerchantIds(getSetting('ignored_merchant_ids', '')),
+      concurrency: getSetting('auto_pricing_concurrency', '4'),
+      message: req.query.message,
+      error: req.query.error,
+    }));
+  } catch (error) {
+    res.redirect(`/panel/?error=${encodeURIComponent(error.message)}`);
+  }
+});
+
+router.get('/profile', (req, res) => {
+  try {
+    const merchantId = getSetting('merchant_id', defaultConfigFromEnv().merchantId);
+    res.type('html').send(renderProfilePage({
+      merchantId,
+      merchantName: getSetting('merchant_name', ''),
+      ignoredMerchantIds: parseMerchantIds(getSetting('ignored_merchant_ids', merchantId)),
+      panelUser: getSetting('panel_user', process.env.PANEL_USER || ''),
+      email: getSetting('profile_email', ''),
+      cityId: getSetting('profile_city_id', getSetting('city_id', config.cityId)),
       message: req.query.message,
       error: req.query.error,
     }));
@@ -797,69 +910,139 @@ router.get('/settings', (req, res) => {
 });
 
 router.post('/auto-pricing/settings', (req, res) => {
-  res.redirect(307, '/panel/settings/automation');
+  req.body = normalizeLegacyAutomationBody(req.body);
+  saveAutomationSettings(req, res);
 });
 
-router.post('/settings/automation', (req, res) => {
+router.post('/settings/automation', saveAutomationSettings);
+
+function saveAutomationSettings(req, res) {
+  const redirectTo = normalizeSettingsReturnTo(req.body.returnTo);
   try {
-    updateAutomationSetting('auto_pricing_enabled', req.body.autoPricingEnabled);
-    updateAutomationSetting('full_parse_enabled', req.body.fullParseEnabled);
-    updateAutomationSetting('kaspi_pull_enabled', req.body.kaspiPullEnabled);
-    updateAutomationSetting('kaspi_push_enabled', req.body.kaspiPushEnabled);
+    const autoPricingEnabled = normalizeSettingBoolean(req.body.autoPricingEnabled, 'auto_pricing_enabled', '1');
+    const fullParseEnabled = normalizeSettingBoolean(req.body.fullParseEnabled, 'full_parse_enabled', '1');
+    const kaspiPullEnabled = normalizeSettingBoolean(req.body.kaspiPullEnabled, 'kaspi_pull_enabled', '0');
+    const kaspiPushEnabled = normalizeSettingBoolean(req.body.kaspiPushEnabled, 'kaspi_push_enabled', '0');
 
-    updateIntervalSetting('auto_pricing_interval_ms', req.body.autoPricingIntervalMin, 5);
-    updateIntervalSetting('full_parse_interval_ms', req.body.fullParseIntervalMin, 15);
-    updateIntervalSetting('kaspi_pull_interval_ms', req.body.kaspiPullIntervalMin, 0);
-    updateIntervalSetting('kaspi_push_interval_ms', req.body.kaspiPushIntervalMin, 0);
+    setSetting('auto_pricing_enabled', autoPricingEnabled ? '1' : '0');
+    setSetting('full_parse_enabled', fullParseEnabled ? '1' : '0');
+    setSetting('kaspi_pull_enabled', kaspiPullEnabled ? '1' : '0');
+    setSetting('kaspi_push_enabled', kaspiPushEnabled ? '1' : '0');
 
-    const ignoredMerchantIds = parseMerchantIds(asArray(req.body['ignoredMerchantIds[]'] ?? req.body.ignoredMerchantIds).join('\n'));
-    setSetting('ignored_merchant_ids', ignoredMerchantIds.join('\n'));
+    updateIntervalSettingIfPresent('auto_pricing_interval_ms', req.body.autoPricingIntervalMin, autoPricingEnabled, 5);
+    updateIntervalSettingIfPresent('full_parse_interval_ms', req.body.fullParseIntervalMin, fullParseEnabled, 15);
+    updateIntervalSettingIfPresent('kaspi_pull_interval_ms', req.body.kaspiPullIntervalMin, kaspiPullEnabled, 30);
+    updateIntervalSettingIfPresent('kaspi_push_interval_ms', req.body.kaspiPushIntervalMin, kaspiPushEnabled, 30);
+
+    const concurrency = optionalNumber(req.body.concurrency);
+    if (concurrency !== null) {
+      setSetting('auto_pricing_concurrency', String(Math.max(1, Math.min(100, Math.floor(concurrency)))));
+    }
+
+    let ignoredMerchantIds = parseMerchantIds(getSetting('ignored_merchant_ids', ''));
+    if (req.body['ignoredMerchantIds[]'] !== undefined || req.body.ignoredMerchantIds !== undefined) {
+      ignoredMerchantIds = parseMerchantIds(asArray(req.body['ignoredMerchantIds[]'] ?? req.body.ignoredMerchantIds).join('\n'));
+      setSetting('ignored_merchant_ids', ignoredMerchantIds.join('\n'));
+    }
     refreshScheduler();
     logRuntime('settings', 'success', 'Настройки автоматизации сохранены', {
-      autoPricingEnabled: getSetting('auto_pricing_enabled', '1'),
-      fullParseEnabled: getSetting('full_parse_enabled', '1'),
-      kaspiPullEnabled: getSetting('kaspi_pull_enabled', '0'),
-      kaspiPushEnabled: getSetting('kaspi_push_enabled', '0'),
+      autoPricingEnabled,
+      fullParseEnabled,
+      kaspiPullEnabled,
+      kaspiPushEnabled,
       ignoredMerchantIds,
     });
-    res.redirect(`${normalizeSettingsReturnTo(req.body.returnTo)}?message=${encodeURIComponent('Настройки сохранены')}`);
+    if (sendActionSuccess(req, res, {
+      message: 'Настройки сохранены',
+      redirectTo,
+      data: {
+        settings: {
+          autoPricingEnabled,
+          fullParseEnabled,
+          kaspiPullEnabled,
+          kaspiPushEnabled,
+          ignoredMerchantIds,
+        },
+      },
+    })) return;
+    res.redirect(`${redirectTo}?message=${encodeURIComponent('Настройки сохранены')}`);
   } catch (error) {
-    res.redirect(`${normalizeSettingsReturnTo(req.body.returnTo)}?error=${encodeURIComponent(error.message)}`);
+    if (sendActionError(req, res, error, { redirectTo })) return;
+    res.redirect(`${redirectTo}?error=${encodeURIComponent(error.message)}`);
   }
-});
+}
 
 router.post('/auto-pricing/toggle', (req, res) => {
   try {
     const enabled = getSetting('auto_pricing_enabled', '1') === '1';
-    setSetting('auto_pricing_enabled', enabled ? '0' : '1');
+    const nextEnabled = !enabled;
+    setSetting('auto_pricing_enabled', nextEnabled ? '1' : '0');
     refreshScheduler();
-    res.redirect(`/panel/settings?message=${encodeURIComponent(enabled ? 'Авторасчет цены выключен' : 'Авторасчет цены включен')}`);
+    const message = nextEnabled ? 'Авторасчет цены включен' : 'Авторасчет цены выключен';
+    if (sendActionSuccess(req, res, {
+      message,
+      redirectTo: '/panel/settings',
+      data: { enabled: nextEnabled },
+    })) return;
+    res.redirect(`/panel/settings?message=${encodeURIComponent(message)}`);
   } catch (error) {
+    if (sendActionError(req, res, error, { redirectTo: '/panel/settings' })) return;
     res.redirect(`/panel/settings?error=${encodeURIComponent(error.message)}`);
   }
 });
 
 router.post('/settings/general', (req, res) => {
+  const redirectTo = normalizeSettingsReturnTo(req.body.returnTo || '/panel/profile');
   try {
     const merchantId = String(req.body.merchantId || '').trim();
     const merchantName = String(req.body.merchantName || '').trim();
+    const email = String(req.body.email || '').trim();
+    const cityId = String(req.body.cityId || req.body.city_id || '').trim();
+    const panelUser = String(req.body.panelUser || '').trim();
+    const panelPassword = String(req.body.panelPassword || '').trim();
     if (!merchantId) {
       throw new Error('Укажите Merchant ID.');
+    }
+    if (cityId && !/^\d{6,12}$/.test(cityId)) {
+      throw new Error('Код города должен состоять из цифр.');
     }
 
     setSetting('merchant_id', merchantId);
     setSetting('merchant_name', merchantName);
-
-    const ignoredMerchantIds = parseMerchantIds(getSetting('ignored_merchant_ids', merchantId));
-    if (!ignoredMerchantIds.includes(merchantId)) {
-      ignoredMerchantIds.unshift(merchantId);
-      setSetting('ignored_merchant_ids', ignoredMerchantIds.join('\n'));
+    setSetting('profile_email', email);
+    if (cityId) {
+      setSetting('profile_city_id', cityId);
+      setSetting('city_id', cityId);
+    }
+    if (panelUser) {
+      setSetting('panel_user', panelUser);
+    }
+    if (panelPassword) {
+      setSetting('panel_password', panelPassword);
+    }
+    if (panelUser || panelPassword) {
+      setPanelAuthCookie(req, res);
     }
 
+    const submittedIgnored = req.body['ignoredMerchantIds[]'] !== undefined || req.body.ignoredMerchantIds !== undefined
+      ? parseMerchantIds(asArray(req.body['ignoredMerchantIds[]'] ?? req.body.ignoredMerchantIds).join('\n'))
+      : parseMerchantIds(getSetting('ignored_merchant_ids', merchantId));
+    const ignoredMerchantIds = [...new Set(submittedIgnored)];
+    if (!ignoredMerchantIds.includes(merchantId)) {
+      ignoredMerchantIds.unshift(merchantId);
+    }
+    setSetting('ignored_merchant_ids', ignoredMerchantIds.join('\n'));
+
     logRuntime('settings', 'success', `Обновлен Merchant ID: ${merchantId}`);
-    res.redirect(`/panel/?message=${encodeURIComponent('Главные настройки сохранены')}`);
+    if (sendActionSuccess(req, res, {
+      message: 'Главные настройки сохранены',
+      redirectTo,
+      data: { merchantId, merchantName, ignoredMerchantIds, email, cityId },
+    })) return;
+    res.redirect(`${redirectTo}?message=${encodeURIComponent('Главные настройки сохранены')}`);
   } catch (error) {
-    res.redirect(`/panel/?error=${encodeURIComponent(error.message)}`);
+    if (sendActionError(req, res, error, { redirectTo })) return;
+    res.redirect(`${redirectTo}?error=${encodeURIComponent(error.message)}`);
   }
 });
 
@@ -871,7 +1054,7 @@ router.get('/sync-log', (_req, res) => {
 
 router.get('/history', (req, res) => {
   try {
-    const tab = String(req.query.tab || 'events') === 'sessions' ? 'sessions' : 'events';
+    const tab = String(req.query.tab || 'sessions') === 'events' ? 'events' : 'sessions';
     const filters = {
       tab,
       eventType: String(req.query.eventType || ''),
@@ -1031,6 +1214,93 @@ function formatCardBuildMessage(cardBuildInfo) {
   return `Для новых товаров из ${cardBuildInfo.sourceLabel} карточки формируются автоматически.`;
 }
 
+function assertProductsCanBeDeleted() {
+  if (isFullParseRunning()) {
+    throw new Error('Нельзя удалять товары во время парсинга.');
+  }
+  if (isAutoPricingRunning()) {
+    throw new Error('Нельзя удалять товары во время расчета цены.');
+  }
+  if (isKaspiPullRunning()) {
+    throw new Error('Нельзя удалять товары во время загрузки из Kaspi.');
+  }
+  if (isKaspiPushRunning()) {
+    throw new Error('Нельзя удалять товары во время загрузки в Kaspi.');
+  }
+}
+
+function deleteProductsBySkus(skus) {
+  const normalizedSkus = [...new Set(
+    asArray(skus)
+      .map((sku) => String(sku || '').trim())
+      .filter(Boolean),
+  )];
+
+  if (!normalizedSkus.length) {
+    throw new Error('Выберите товары для удаления.');
+  }
+
+  let deleted = 0;
+  const missing = [];
+  for (const sku of normalizedSkus) {
+    const result = deleteProduct(sku);
+    if (Number(result.changes || 0) > 0) {
+      deleted += Number(result.changes || 0);
+    } else {
+      missing.push(sku);
+    }
+  }
+
+  if (!deleted) {
+    throw new Error(`Товары не найдены или уже удалены: ${missing.join(', ')}`);
+  }
+
+  return deleted;
+}
+
+function validateProductFormData(data = {}) {
+  const minPrice = optionalNumber(data.min_price);
+  const maxPrice = optionalNumber(data.max_price);
+  const priceStep = optionalNumber(data.price_step);
+  const preOrder = optionalNumber(data.pre_order);
+
+  if (minPrice !== null && minPrice < 0) {
+    throw new Error('Минимальная цена не может быть отрицательной.');
+  }
+  if (maxPrice !== null && maxPrice < 0) {
+    throw new Error('Максимальная цена не может быть отрицательной.');
+  }
+  if (minPrice !== null && maxPrice !== null && minPrice > 0 && maxPrice > 0 && minPrice > maxPrice) {
+    throw new Error('Минимальная цена не может быть больше максимальной.');
+  }
+  if (priceStep !== null && priceStep < 1) {
+    throw new Error('Шаг авторасчета должен быть от 1 тенге.');
+  }
+  if (preOrder !== null && (preOrder < 0 || preOrder > 30)) {
+    throw new Error('Предзаказ должен быть от 0 до 30 дней.');
+  }
+}
+
+function validateBulkProductUpdates(updates = {}) {
+  validateProductFormData({
+    min_price: updates.min_price,
+    max_price: updates.max_price,
+    pre_order: updates.pre_order,
+    price_step: updates.price_step,
+  });
+}
+
+function validateWarehouses(warehouses = []) {
+  for (const warehouse of warehouses) {
+    if (Number(warehouse.stock_count || 0) < 0 || Number(warehouse.actual_stock || 0) < 0) {
+      throw new Error(`Остатки склада ${warehouse.store_id || ''} не могут быть отрицательными.`);
+    }
+    if (Number(warehouse.pre_order || 0) < 0 || Number(warehouse.pre_order || 0) > 30) {
+      throw new Error(`Предзаказ склада ${warehouse.store_id || ''} должен быть от 0 до 30 дней.`);
+    }
+  }
+}
+
 function bulkWarehouseUpdatesFromBody(body) {
   const storeIds = asArray(firstDefined(body.bulkStoreId, body['bulkStoreId[]']));
   const enabledList = asArray(firstDefined(body.bulkWarehouseEnabled, body['bulkWarehouseEnabled[]']));
@@ -1163,35 +1433,75 @@ function getBuildStatesBySku(sessions = []) {
   return states;
 }
 
-function updateAutomationSetting(key, value) {
-  if (value === undefined) {
-    return;
-  }
-  setSetting(key, String(Number(String(value) === '1' || String(value).toLowerCase() === 'true')));
+function updateIntervalSetting(key, value, enabled = false, fallbackMinutes = 0) {
+  const minutes = Math.max(0, Number(value));
+  const fallback = Math.max(0, Number(fallbackMinutes) || 0);
+  const normalizedMinutes = Number.isFinite(minutes)
+    ? enabled && minutes <= 0
+      ? fallback
+      : minutes
+    : fallback;
+  const intervalMs = Math.round(normalizedMinutes * 60000);
+  setSetting(key, String(intervalMs));
 }
 
-function updateIntervalSetting(key, value, fallbackMinutes = 0) {
-  if (value === undefined || value === null || value === '') {
-    return;
-  }
+function updateIntervalSettingIfPresent(key, value, enabled = false, fallbackMinutes = 0) {
+  if (value === undefined || value === null || value === '') return;
+  updateIntervalSetting(key, value, enabled, fallbackMinutes);
+}
 
-  const minutes = Math.max(0, Number(value));
-  const intervalMs = Number.isFinite(minutes)
-    ? Math.round(minutes * 60000)
-    : Math.max(0, Number(fallbackMinutes) * 60000);
-  setSetting(key, String(intervalMs));
+function normalizeSettingBoolean(value, settingKey, fallback = '0') {
+  if (value !== undefined) {
+    return normalizeBooleanInput(value);
+  }
+  return getSetting(settingKey, fallback) === '1';
+}
+
+function normalizeBooleanInput(value) {
+  const values = asArray(value)
+    .map((item) => String(item || '').trim().toLowerCase())
+    .filter(Boolean);
+  if (!values.length) return false;
+  return values.some((item) => ['1', 'true', 'on', 'yes', 'да'].includes(item));
+}
+
+function normalizeLegacyAutomationBody(body = {}) {
+  const normalized = { ...body };
+  if (body.intervalMin !== undefined) {
+    normalized.autoPricingEnabled = legacyIntervalEnabled(body.intervalMin);
+    normalized.autoPricingIntervalMin = body.intervalMin;
+  }
+  if (body.fullIntervalMin !== undefined) {
+    normalized.fullParseEnabled = legacyIntervalEnabled(body.fullIntervalMin);
+    normalized.fullParseIntervalMin = body.fullIntervalMin;
+  }
+  if (body.pullIntervalMin !== undefined) {
+    normalized.kaspiPullEnabled = legacyIntervalEnabled(body.pullIntervalMin);
+    normalized.kaspiPullIntervalMin = body.pullIntervalMin;
+  }
+  if (body.pushIntervalMin !== undefined) {
+    normalized.kaspiPushEnabled = legacyIntervalEnabled(body.pushIntervalMin);
+    normalized.kaspiPushIntervalMin = body.pushIntervalMin;
+  }
+  return normalized;
+}
+
+function legacyIntervalEnabled(value) {
+  return Number(value || 0) > 0 ? '1' : '0';
 }
 
 function autoPricingReturnPath(req) {
   const referer = String(req.get('referer') || '');
+  if (referer.includes('/panel/products')) return '/panel/products';
   if (referer.includes('/panel/settings')) return '/panel/settings';
+  if (referer.includes('/panel/history')) return '/panel/history?tab=sessions';
   if (referer.includes('/panel/')) return '/panel/';
   return '/panel/products';
 }
 
 function normalizeSettingsReturnTo(value) {
   const target = String(value || '').trim();
-  if (target === '/panel/' || target === '/panel/settings') {
+  if (target === '/panel/' || target === '/panel/settings' || target === '/panel/profile') {
     return target;
   }
   return '/panel/settings';
@@ -1211,6 +1521,42 @@ function returnBackPath(req, fallback) {
   if (referer.includes('/panel/parse-sessions')) return '/panel/history?tab=sessions';
   if (referer.includes('/panel/')) return '/panel/';
   return fallback;
+}
+
+function wantsJsonResponse(req) {
+  const accept = String(req.get('accept') || '');
+  return req.get('x-kaspi-async') === '1' || accept.includes('application/json');
+}
+
+function sendActionSuccess(req, res, {
+  message = '',
+  redirectTo = '',
+  status = 200,
+  data = {},
+} = {}) {
+  if (!wantsJsonResponse(req)) return false;
+  res.status(status).json({
+    ok: true,
+    message,
+    redirectTo,
+    ...(data && typeof data === 'object' ? data : {}),
+  });
+  return true;
+}
+
+function sendActionError(req, res, error, {
+  redirectTo = '',
+  status = 400,
+  data = {},
+} = {}) {
+  if (!wantsJsonResponse(req)) return false;
+  res.status(status).json({
+    ok: false,
+    error: error instanceof Error ? error.message : String(error),
+    redirectTo,
+    ...(data && typeof data === 'object' ? data : {}),
+  });
+  return true;
 }
 
 export default router;

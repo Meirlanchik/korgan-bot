@@ -23,7 +23,9 @@ export function productFromForm(body) {
     model: optionalText(body.model),
     brand: optionalText(body.brand),
     category: optionalText(body.category),
-    city_id: optionalText(firstDefined(body.cityId, body.city_id)) || config.cityId,
+    city_id: firstDefined(body.cityId, body.city_id) !== undefined
+      ? optionalText(firstDefined(body.cityId, body.city_id)) || config.cityId
+      : null,
     city_price: optionalNumber(firstDefined(body.cityPrice, body.city_price, body.price)),
     upload_price: optionalNumber(firstDefined(body.uploadPrice, body.upload_price)),
     available: toBooleanNumber(body.available),

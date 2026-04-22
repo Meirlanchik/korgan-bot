@@ -5,11 +5,7 @@ dotenv.config();
 
 const uploadDir = process.env.UPLOAD_DIR || '/app/uploads';
 const dataDir = process.env.DATA_DIR || '/app/data';
-const autoPricingConcurrency = Number(
-  process.env.KASPI_AUTO_PRICING_CONCURRENCY
-  || process.env.KASPI_AUTOPRICING_CONCURRENCY
-  || 4,
-);
+const autoPricingConcurrency = 4;
 
 export const config = Object.freeze({
   port: Number(process.env.PORT || 3000),

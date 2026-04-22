@@ -158,15 +158,20 @@ export function initDatabase(dbPath) {
     ins.run('full_parse_interval_ms', String(process.env.KASPI_FULL_PARSE_INTERVAL_MS || 900000));
     ins.run('kaspi_pull_interval_ms', '0');
     ins.run('kaspi_push_interval_ms', '0');
-    ins.run('auto_pricing_concurrency', String(process.env.KASPI_AUTO_PRICING_CONCURRENCY || process.env.KASPI_AUTOPRICING_CONCURRENCY || 4));
+    ins.run('auto_pricing_concurrency', '4');
     ins.run('auto_pricing_enabled', '1');
     ins.run('full_parse_enabled', '1');
     ins.run('kaspi_pull_enabled', '0');
     ins.run('kaspi_push_enabled', '0');
     ins.run('bot_active', '1');
     ins.run('merchant_id', defaultMerchantId);
-    ins.run('merchant_name', process.env.KASPI_MERCHANT_NAME || '');
+    ins.run('merchant_name', '');
     ins.run('ignored_merchant_ids', defaultMerchantId);
+    ins.run('profile_email', '');
+    ins.run('profile_city_id', process.env.KASPI_CITY_ID || '710000000');
+    ins.run('city_id', process.env.KASPI_CITY_ID || '710000000');
+    ins.run('panel_user', process.env.PANEL_USER || '');
+    ins.run('panel_password', process.env.PANEL_PASSWORD || '');
     ins.run('last_kaspi_pull_at', '');
     ins.run('last_kaspi_push_at', '');
     ins.run('kaspi_api_token', process.env.KASPI_API_TOKEN || '');
@@ -184,7 +189,7 @@ export function getDb() {
 
 // ─── Products ───────────────────────────────────────────
 
-export function getAllProducts({ sort = 'sku', order = 'asc', search = '', available = null } = {}) {
+export function getAllProducts({ sort = 'sku', order = 'asc', search = '', available = null, category = '' } = {}) {
     const allowedSort = ['sku', 'model', 'brand', 'city_price', 'available', 'auto_pricing_enabled',
         'min_price', 'max_price', 'my_position', 'first_place_price', 'last_parsed_at', 'pre_order',
         'upload_price', 'last_recommended_price', 'seller_count', 'category'];
@@ -201,6 +206,10 @@ export function getAllProducts({ sort = 'sku', order = 'asc', search = '', avail
     if (available !== null && available !== '') {
         where += ' AND available = @available';
         params.available = Number(available);
+    }
+    if (category) {
+        where += ' AND category = @category';
+        params.category = String(category);
     }
 
     return getDb().prepare(`SELECT * FROM products WHERE ${where} ORDER BY ${col} ${dir}`).all(params);
@@ -338,6 +347,7 @@ export function deleteProduct(sku) {
         d.prepare('DELETE FROM sellers WHERE sku = ?').run(normalizedSku);
         d.prepare('DELETE FROM product_warehouses WHERE sku = ?').run(normalizedSku);
         d.prepare('DELETE FROM product_history WHERE sku = ?').run(normalizedSku);
+        d.prepare('DELETE FROM finance_products WHERE sku = ?').run(normalizedSku);
         return d.prepare('DELETE FROM products WHERE sku = ?').run(normalizedSku);
     });
 
@@ -1220,11 +1230,7 @@ export function getDashboardStats() {
         fullParseIntervalMs: Number(getSetting('full_parse_interval_ms', '900000')),
         kaspiPullIntervalMs: Number(getSetting('kaspi_pull_interval_ms', '0')),
         kaspiPushIntervalMs: Number(getSetting('kaspi_push_interval_ms', '0')),
-        autoPricingConcurrency: Number(
-            process.env.KASPI_AUTO_PRICING_CONCURRENCY
-            || process.env.KASPI_AUTOPRICING_CONCURRENCY
-            || getSetting('auto_pricing_concurrency', '4'),
-        ),
+        autoPricingConcurrency: Number(getSetting('auto_pricing_concurrency', '4')),
         merchantName: getSetting('merchant_name', '') || getKnownMerchantNames(getSetting('merchant_id', ''))[0] || '',
         warehouseIds: getAllWarehouseIds(),
     };

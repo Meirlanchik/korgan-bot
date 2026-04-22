@@ -122,6 +122,14 @@ export async function getFinanceDashboard(query = {}) {
     });
   }
 
+  if (!shouldFetchFinanceReport(query)) {
+    return buildEmptyFinanceDashboard({
+      settings,
+      filters,
+      notice: 'Первое открытие быстрое: нажмите «Обновить из API», когда нужен свежий отчет Kaspi.',
+    });
+  }
+
   try {
     const orders = await withTimeout(
       fetchKaspiOrdersWithEntries({
@@ -553,7 +561,7 @@ function buildFinanceDashboardFromOrders({ orders, settings, filters }) {
   };
 }
 
-function buildEmptyFinanceDashboard({ settings, filters, error = '' }) {
+function buildEmptyFinanceDashboard({ settings, filters, error = '', notice = '' }) {
   return {
     settings,
     filters,
@@ -584,7 +592,17 @@ function buildEmptyFinanceDashboard({ settings, filters, error = '' }) {
     ordersPageSize: filters.pageSize,
     ordersPageCount: 1,
     loadError: error,
+    loadNotice: notice,
   };
+}
+
+function shouldFetchFinanceReport(query = {}) {
+  if (String(query.refresh || '') === '1' || String(query.load || '') === '1') {
+    return true;
+  }
+
+  return ['period', 'from', 'to', 'status', 'state', 'page', 'pageSize']
+    .some((key) => Object.prototype.hasOwnProperty.call(query, key));
 }
 
 function resolveCommissionInfo({

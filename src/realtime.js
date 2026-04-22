@@ -1,5 +1,10 @@
 import { WebSocketServer } from 'ws';
-import { config } from './config.js';
+import {
+  hasPanelCredentialsConfigured,
+  isAuthorizedByBasicHeader,
+  isAuthorizedByCookie,
+  isAuthorizedByQueryToken,
+} from './panelAuth.js';
 
 let wss = null;
 
@@ -57,25 +62,10 @@ export function broadcastRealtimeEvent(type, payload = {}) {
 }
 
 function isAuthorized(request) {
-  const { user, password } = config.panel;
-
-  if (!user || !password) {
+  if (!hasPanelCredentialsConfigured()) {
     return true;
   }
-
-  const authorization = request.headers.authorization || '';
-  const [scheme, encoded] = authorization.split(' ');
-
-  if (scheme !== 'Basic' || !encoded) {
-    return false;
-  }
-
-  const decoded = Buffer.from(encoded, 'base64').toString('utf8');
-  const separator = decoded.indexOf(':');
-  const reqUser = separator >= 0 ? decoded.slice(0, separator) : '';
-  const reqPassword = separator >= 0 ? decoded.slice(separator + 1) : '';
-
-  return reqUser === user && reqPassword === password;
+  return isAuthorizedByCookie(request) || isAuthorizedByQueryToken(request) || isAuthorizedByBasicHeader(request);
 }
 
 function safeSend(socket, payload) {

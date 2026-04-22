@@ -19,8 +19,8 @@ export function renderHistoryPage({
     error,
     content: `
       <div class="tabs">
-        <a class="tab ${activeTab === 'events' ? 'active' : ''}" href="/panel/history?tab=events">События</a>
         <a class="tab ${activeTab === 'sessions' ? 'active' : ''}" href="/panel/history?tab=sessions">Сессии</a>
+        <a class="tab ${activeTab === 'events' ? 'active' : ''}" href="/panel/history?tab=events">События</a>
       </div>
 
       <div class="tab-content active">
@@ -65,9 +65,9 @@ function renderEventsBlock({ events, filters, rows }) {
         </div>
       </div>
       <div class="card__body">
-        <form method="get" action="/panel/history">
+        <form method="get" action="/panel/history" class="compact-filter-form">
           <input type="hidden" name="tab" value="events">
-          <div class="form-row">
+          <div class="compact-filter-grid">
             <div class="form-group">
               <label class="form-label">Тип события</label>
               <select class="form-select" name="eventType">
@@ -92,7 +92,7 @@ function renderEventsBlock({ events, filters, rows }) {
               <input class="form-input" type="text" name="eventSearch" value="${escapeAttr(filters.eventSearch || '')}" placeholder="Например, 105988073">
             </div>
           </div>
-          <div class="form-actions">
+          <div class="form-actions compact-filter-actions">
             <button class="btn btn--primary" type="submit">Фильтровать</button>
             <a class="btn btn--ghost" href="/panel/history?tab=events">Сбросить</a>
           </div>
@@ -139,9 +139,9 @@ function renderSessionsBlock({ sessions, filters, rows }) {
         </div>
       </div>
       <div class="card__body">
-        <form method="get" action="/panel/history">
+        <form method="get" action="/panel/history" class="compact-filter-form">
           <input type="hidden" name="tab" value="sessions">
-          <div class="form-row">
+          <div class="compact-filter-grid">
             <div class="form-group">
               <label class="form-label">Тип сессии</label>
               <select class="form-select" name="sessionType">
@@ -175,7 +175,7 @@ function renderSessionsBlock({ sessions, filters, rows }) {
               </select>
             </div>
           </div>
-          <div class="form-actions">
+          <div class="form-actions compact-filter-actions">
             <button class="btn btn--primary" type="submit">Фильтровать</button>
             <a class="btn btn--ghost" href="/panel/history?tab=sessions">Сбросить</a>
           </div>
@@ -202,6 +202,7 @@ function renderSessionsBlock({ sessions, filters, rows }) {
               <th>Статус</th>
               <th>Прогресс</th>
               <th>Время</th>
+              <th>Длительность</th>
               <th>Итог</th>
             </tr>
           </thead>
@@ -261,9 +262,10 @@ function renderSessionRow(session) {
         </div>
       </td>
       <td>
-        <div>${renderDateTime(session.started_at, { dateStyle: 'short', timeStyle: 'short' })}</div>
-        <div class="cell-sub">${session.finished_at ? renderDateTime(session.finished_at, { dateStyle: 'short', timeStyle: 'short' }) : 'В работе'}</div>
+        <div>Старт: ${renderDateTime(session.started_at, { dateStyle: 'medium', timeStyle: 'medium' })}</div>
+        <div class="cell-sub">${session.finished_at ? `Финиш: ${renderDateTime(session.finished_at, { dateStyle: 'medium', timeStyle: 'medium' })}` : 'В работе'}</div>
       </td>
+      <td>${escapeHtml(formatDuration(session))}</td>
       <td style="min-width:280px">${escapeHtml(session.message || '—')}</td>
     </tr>
   `;
@@ -309,4 +311,23 @@ function formatPrice(value) {
   const amount = Number(value || 0);
   if (!amount) return '—';
   return `${amount.toLocaleString('ru-RU')} ₸`;
+}
+
+function formatDuration(session = {}) {
+  let ms = Number(session.duration_ms || 0);
+  if (!ms && session.started_at) {
+    const started = new Date(session.started_at).getTime();
+    const finished = session.finished_at ? new Date(session.finished_at).getTime() : Date.now();
+    if (Number.isFinite(started) && Number.isFinite(finished) && finished >= started) {
+      ms = finished - started;
+    }
+  }
+  if (!ms) return '—';
+  const seconds = Math.round(ms / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const restSeconds = seconds % 60;
+  if (minutes < 1) return `${restSeconds} сек`;
+  const hours = Math.floor(minutes / 60);
+  const restMinutes = minutes % 60;
+  return hours ? `${hours} ч ${restMinutes} мин` : `${minutes} мин ${restSeconds} сек`;
 }
