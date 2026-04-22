@@ -358,7 +358,7 @@ function renderLivePricePanel({ state, latestSession, session, progress, product
         </div>
         <div class="session-toolbar">
           <a class="btn btn--ghost btn--sm" href="/panel/history?tab=sessions">Открыть историю</a>
-          <span class="badge ${running ? 'badge--blue' : state?.enabled ? 'badge--green' : 'badge--gray'}">${running ? 'В работе' : state?.enabled ? 'Авто включен' : 'Авто выключен'}</span>
+          <span class="badge ${running ? 'badge--blue badge--pulse' : state?.enabled ? 'badge--green' : 'badge--gray'}">${running ? 'В работе' : state?.enabled ? 'Авто включен' : 'Авто выключен'}</span>
         </div>
       </div>
       <div class="card__body">
@@ -493,8 +493,14 @@ function sortLink(column, label, currentSort, currentOrder, search, availableFil
   if (availableFilter !== '') params.set('available', availableFilter);
   if (categoryFilter) params.set('category', categoryFilter);
   const classes = ['sortable'];
-  if (currentSort === column) classes.push(currentOrder);
-  return `<th class="${classes.join(' ')}"><a href="/panel/products?${params.toString()}">${escapeHtml(label)}</a></th>`;
+  let icon = '';
+  if (currentSort === column) {
+    classes.push(currentOrder);
+    icon = currentOrder === 'asc' 
+      ? '<svg style="display:inline;vertical-align:middle" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 15l7-7 7 7"/></svg>' 
+      : '<svg style="display:inline;vertical-align:middle" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>';
+  }
+  return `<th class="${classes.join(' ')}"><a href="/panel/products?${params.toString()}" style="display:inline-flex;align-items:center;gap:4px;color:inherit;text-decoration:none">${escapeHtml(label)}${icon}</a></th>`;
 }
 
 function renderWarehouseSummary(warehouses) {
@@ -511,7 +517,13 @@ function emptyRow() {
     <tr>
       <td colspan="12">
         <div class="empty">
+          <div class="empty__icon">
+            <svg width="48" height="48" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"/></svg>
+          </div>
           <div class="empty__text">Товаров пока нет</div>
+          <div class="empty__action">
+            <a href="/panel/xml/upload" class="btn btn--primary btn--sm">Загрузить XML</a>
+          </div>
         </div>
       </td>
     </tr>`;

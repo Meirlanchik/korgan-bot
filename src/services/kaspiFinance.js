@@ -12,7 +12,8 @@ const MAX_CREATION_RANGE_DAYS = 14;
 const CACHE_TTL_MS = 60_000;
 const DEFAULT_TZ_OFFSET = '+05:00';
 const DEFAULT_API_TIMEOUT_MS = Math.max(1_000, Number(process.env.KASPI_FINANCE_API_TIMEOUT_MS || 8_000));
-const DEFAULT_REPORT_TIMEOUT_MS = Math.max(DEFAULT_API_TIMEOUT_MS, Number(process.env.KASPI_FINANCE_REPORT_TIMEOUT_MS || 15_000));
+const DEFAULT_REPORT_TIMEOUT_MS = Math.max(DEFAULT_API_TIMEOUT_MS, Number(process.env.KASPI_FINANCE_REPORT_TIMEOUT_MS || 120_000));
+const DEFAULT_ENTRY_CONCURRENCY = Math.max(1, Math.min(24, Number(process.env.KASPI_FINANCE_ENTRY_CONCURRENCY || 12)));
 const reportCache = new Map();
 
 const COMMISSION_RUBRICS = [
@@ -51,7 +52,7 @@ export function getFinanceSettings() {
 }
 
 export function saveFinanceSettings(input = {}) {
-  const apiToken = clean(input.apiToken || input.kaspi_api_token);
+  const apiToken = normalizeKaspiApiToken(input.apiToken || input.kaspi_api_token);
   const packagingPercent = toPercent(input.packagingPercent ?? input.finance_packaging_percent, 1);
   const taxPercent = toPercent(input.taxPercent ?? input.finance_tax_percent, 3);
   const defaultPeriod = clean(input.defaultPeriod || input.finance_default_period || '7d') || '7d';
@@ -206,7 +207,7 @@ async function fetchKaspiOrdersWithEntries({
 
   const orders = await mapWithConcurrency(
     [...ordersMap.values()].sort((a, b) => Number(b.creationDate || 0) - Number(a.creationDate || 0)),
-    6,
+    DEFAULT_ENTRY_CONCURRENCY,
     async (order) => ({
       ...order,
       entries: await fetchKaspiOrderEntries(order.id, token),
@@ -229,7 +230,9 @@ function buildOrdersUrl({ dateFromMs, dateToMs, pageNumber = 0, pageSize = DEFAU
   params.set('filter[orders][creationDate][$le]', String(dateToMs));
   if (status) params.set('filter[orders][status]', status);
   if (state) params.set('filter[orders][state]', state);
-  return `${KASPI_API_BASE}/orders?${params.toString()}`;
+  // Kaspi's Orders API does not recognize date operator names when "$" is
+  // percent-encoded by URLSearchParams as "%24".
+  return `${KASPI_API_BASE}/orders?${params.toString().replace(/%24/g, '$')}`;
 }
 
 async function fetchKaspiOrderEntries(orderId, token) {
@@ -768,7 +771,17 @@ function toPercent(value, fallback) {
 }
 
 function getKaspiApiToken() {
-  return clean(getSetting('kaspi_api_token', process.env.KASPI_API_TOKEN || ''));
+  return normalizeKaspiApiToken(getSetting('kaspi_api_token', process.env.KASPI_API_TOKEN || ''));
+}
+
+function normalizeKaspiApiToken(value) {
+  const token = clean(value);
+  if (!token || token.includes('=')) return token;
+  if (!/^[A-Za-z0-9+/]+$/.test(token)) return token;
+  const remainder = token.length % 4;
+  if (remainder === 2) return `${token}==`;
+  if (remainder === 3) return `${token}=`;
+  return token;
 }
 
 function maskSecret(value) {

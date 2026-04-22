@@ -473,8 +473,8 @@ function buildProgress({ total, processed, success, errors, status }) {
 
 function statusBadge(status) {
   if (status === 'success') return '<span class="badge badge--green">OK</span>';
-  if (status === 'running') return '<span class="badge badge--blue">Идет</span>';
-  if (status === 'partial') return '<span class="badge" style="background:#fff8e1;color:#f57f17">Частично</span>';
+  if (status === 'running') return '<span class="badge badge--blue badge--pulse">Идет</span>';
+  if (status === 'partial') return '<span class="badge badge--warning">Частично</span>';
   if (status === 'aborted') return '<span class="badge badge--gray">Прервано</span>';
   return '<span class="badge badge--red">Ошибка</span>';
 }
@@ -503,7 +503,7 @@ function statusText(status) {
 function logStatusBadge(status) {
   if (status === 'success') return '<span class="badge badge--green">OK</span>';
   if (status === 'info') return '<span class="badge badge--blue">Info</span>';
-  if (status === 'warning') return '<span class="badge" style="background:#fff8e1;color:#f57f17">Warn</span>';
+  if (status === 'warning') return '<span class="badge badge--warning">Warn</span>';
   return '<span class="badge badge--red">Ошибка</span>';
 }
 

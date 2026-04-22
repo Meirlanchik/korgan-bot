@@ -301,8 +301,8 @@ function sessionTypeLabel(value) {
 
 function statusBadge(status) {
   if (status === 'success') return '<span class="badge badge--green">Успех</span>';
-  if (status === 'running') return '<span class="badge badge--blue">В работе</span>';
-  if (status === 'partial') return '<span class="badge" style="background:#fff8e1;color:#f57f17">Частично</span>';
+  if (status === 'running') return '<span class="badge badge--blue badge--pulse">В работе</span>';
+  if (status === 'partial') return '<span class="badge badge--warning">Частично</span>';
   if (status === 'aborted') return '<span class="badge badge--gray">Остановлена</span>';
   return '<span class="badge badge--red">Ошибка</span>';
 }

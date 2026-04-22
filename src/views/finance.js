@@ -259,7 +259,7 @@ export function renderFinancePage({
                   </tr>
                 </thead>
                 <tbody>
-                  ${warehouseRows || '<tr><td colspan="6" class="text-muted">Нет данных за выбранный период.</td></tr>'}
+                  ${warehouseRows || '<tr><td colspan="6"><div class="empty"><div class="empty__text">Нет данных за выбранный период</div></div></td></tr>'}
                 </tbody>
               </table>
             </div>
@@ -283,7 +283,7 @@ export function renderFinancePage({
                   </tr>
                 </thead>
                 <tbody>
-                  ${customerRows || '<tr><td colspan="5" class="text-muted">Нет данных по клиентам.</td></tr>'}
+                  ${customerRows || '<tr><td colspan="5"><div class="empty"><div class="empty__text">Нет данных по клиентам</div></div></td></tr>'}
                 </tbody>
               </table>
             </div>
@@ -323,7 +323,7 @@ export function renderFinancePage({
                   </tr>
                 </thead>
                 <tbody>
-                  ${productRows || '<tr><td colspan="12" class="text-muted">Нет продаж по выбранным фильтрам.</td></tr>'}
+                  ${productRows || '<tr><td colspan="12"><div class="empty"><div class="empty__text">Нет продаж по выбранным фильтрам</div></div></td></tr>'}
                 </tbody>
               </table>
             </div>
@@ -358,7 +358,7 @@ export function renderFinancePage({
                 </tr>
               </thead>
               <tbody>
-                ${orderRows || '<tr><td colspan="9" class="text-muted">Нет заказов за этот период.</td></tr>'}
+                ${orderRows || '<tr><td colspan="9"><div class="empty"><div class="empty__text">Нет заказов за этот период</div></div></td></tr>'}
               </tbody>
             </table>
           </div>

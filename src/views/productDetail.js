@@ -109,7 +109,7 @@ export function renderProductDetailPage({
         error,
         content: `
       <div style="margin-bottom:16px">
-        <a href="/panel/products" class="text-sm text-muted" style="text-decoration:none">&larr; Назад к товарам</a>
+        <a href="/panel/products" class="btn btn--ghost btn--sm" style="text-decoration:none">&larr; Назад к товарам</a>
       </div>
 
       <div class="tabs">
@@ -244,17 +244,20 @@ export function renderProductDetailPage({
 
       </form>
 
-      <div class="form-actions" style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn btn--primary" type="submit" form="product-save-form">Сохранить</button>
-        <form action="/panel/products/${encodeURIComponent(product.sku)}/auto-price" method="post" data-async-form="1" data-redirect-on-success="1" style="margin:0">
-          <button class="btn btn--ghost btn--sm" type="submit">Рассчитать</button>
-        </form>
-        <form action="/panel/products/${encodeURIComponent(product.sku)}/parse" method="post" data-async-form="1" data-redirect-on-success="1" style="margin:0">
-          <button class="btn btn--ghost btn--sm" type="submit">Сформировать</button>
-        </form>
-        <form action="/panel/products/${encodeURIComponent(product.sku)}/delete" method="post" data-async-form="1" data-redirect-on-success="1" style="margin:0" onsubmit="return confirm('Удалить товар?')">
-          <button class="btn btn--danger btn--sm" type="submit">Удалить</button>
-        </form>
+      <div class="card" style="margin-top:16px;padding:18px 24px">
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+          <button class="btn btn--primary" type="submit" form="product-save-form">Сохранить</button>
+          <form action="/panel/products/${encodeURIComponent(product.sku)}/auto-price" method="post" data-async-form="1" data-redirect-on-success="1" style="margin:0">
+            <button class="btn btn--accent btn--sm" type="submit">Рассчитать</button>
+          </form>
+          <form action="/panel/products/${encodeURIComponent(product.sku)}/parse" method="post" data-async-form="1" data-redirect-on-success="1" style="margin:0">
+            <button class="btn btn--ghost btn--sm" type="submit">Сформировать</button>
+          </form>
+          <div style="flex:1"></div>
+          <form action="/panel/products/${encodeURIComponent(product.sku)}/delete" method="post" data-async-form="1" data-redirect-on-success="1" style="margin:0" onsubmit="return confirm('Удалить товар?')">
+            <button class="btn btn--danger btn--sm" type="submit">Удалить</button>
+          </form>
+        </div>
       </div>
 
       <script>
@@ -599,7 +602,7 @@ function historySourceBadge(source) {
 
 function historyStatusBadge(status) {
     if (status === 'success') return '<span class="badge badge--green">OK</span>';
-    if (status === 'partial') return '<span class="badge badge--gray">Частично</span>';
+    if (status === 'partial') return '<span class="badge badge--warning">Частично</span>';
     return '<span class="badge badge--red">Ошибка</span>';
 }
 

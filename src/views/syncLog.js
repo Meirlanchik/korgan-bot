@@ -9,7 +9,7 @@ export function renderSyncLogPage({ logs, message, error }) {
             : l.status === 'info'
                 ? '<span class="badge badge--blue">INFO</span>'
                 : l.status === 'partial'
-                    ? '<span class="badge" style="background:#fff8e1;color:#f57f17">Частично</span>'
+                    ? '<span class="badge badge--warning">Частично</span>'
                     : '<span class="badge badge--red">Ошибка</span>';
 
         const typeMap = {
