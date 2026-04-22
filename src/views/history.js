@@ -28,29 +28,6 @@ export function renderHistoryPage({
       </div>
 
       ${renderDateTimeScript()}
-      <script>
-      (() => {
-        let refreshTimer = null;
-        const activeTab = ${JSON.stringify(activeTab)};
-        const scheduleRefresh = () => {
-          if (refreshTimer) return;
-          refreshTimer = setTimeout(() => {
-            location.reload();
-          }, 900);
-        };
-
-        if (activeTab === 'events') {
-          ['kaspi:history_event_added', 'kaspi:sync_log_added']
-            .forEach((eventName) => document.addEventListener(eventName, scheduleRefresh));
-        } else {
-          document.addEventListener('kaspi:parse_session_updated', (event) => {
-            if (event.detail && event.detail.status !== 'running') {
-              scheduleRefresh();
-            }
-          });
-        }
-      })();
-      </script>
     `,
   });
 }
@@ -180,7 +157,7 @@ function renderSessionsBlock({ sessions, filters, rows }) {
             <a class="btn btn--ghost" href="/panel/history?tab=sessions">Сбросить</a>
           </div>
         </form>
-        <form action="/panel/parse-sessions/clear" method="post" style="margin-top:12px" onsubmit="return confirm('Очистить завершенные сессии?')">
+        <form class="action-row action-row--spaced" action="/panel/parse-sessions/clear" method="post" onsubmit="return confirm('Очистить завершенные сессии?')">
           <input type="hidden" name="type" value="${escapeAttr(filters.sessionType || '')}">
           <input type="hidden" name="triggerSource" value="${escapeAttr(filters.sessionSource || '')}">
           <button class="btn btn--ghost" type="submit">Очистить завершенные</button>

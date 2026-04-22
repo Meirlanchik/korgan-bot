@@ -13,11 +13,11 @@ export function renderProductsPage({
   categoryFilter = '',
   categories = [],
   merchantId = '',
+  ignoredMerchantIds = [],
   priceCalculationState = { enabled: false, running: false, nextRunAt: null, intervalMs: 0 },
   latestPriceCalculationSession = null,
   currentPriceCalculationSession = null,
   priceCalculationProductsCount = 0,
-  buildStatesBySku = {},
 }) {
   const filterParams = new URLSearchParams();
   if (sort) filterParams.set('sort', sort);
@@ -37,12 +37,27 @@ export function renderProductsPage({
     const available = Number(product.available) === 1;
     const autoPricing = Number(product.auto_pricing_enabled) === 1;
     const warehouses = Array.isArray(product.warehouses) ? product.warehouses : [];
+    const lastPriceUpdatedAt = product.last_price_updated_at || product.last_auto_price_updated_at || '';
+    const lastPriceUpdatedMs = lastPriceUpdatedAt ? Date.parse(lastPriceUpdatedAt) || 0 : 0;
 
-    return `<tr class="product-row" data-search="${escapeAttr(`${product.model || ''} ${product.sku || ''} ${product.brand || ''}`.toLowerCase())}" data-available="${available ? '1' : '0'}" data-category="${escapeAttr(product.category || '')}">
-      <td>
-        <input class="product-check" form="bulkForm" type="checkbox" name="skus" value="${escapeAttr(product.sku)}" onchange="syncBulkBar()">
+    return `<tr class="product-row"
+      data-search="${escapeAttr(`${product.model || ''} ${product.sku || ''} ${product.brand || ''}`.toLowerCase())}"
+      data-available="${available ? '1' : '0'}"
+      data-auto-pricing="${autoPricing ? '1' : '0'}"
+      data-category="${escapeAttr(product.category || '')}"
+      data-sort-sku="${escapeAttr(String(product.sku || '').toLowerCase())}"
+      data-sort-model="${escapeAttr(String(product.model || product.sku || '').toLowerCase())}"
+      data-sort-category="${escapeAttr(String(product.category || '').toLowerCase())}"
+      data-sort-available="${available ? '1' : '0'}"
+      data-sort-auto_pricing_enabled="${autoPricing ? '1' : '0'}"
+      data-sort-upload_price="${escapeAttr(Number(price || 0))}"
+      data-sort-first_place_price="${escapeAttr(Number(product.first_place_price || 0))}"
+      data-sort-my_position="${escapeAttr(Number(product.my_position || 0))}"
+      data-sort-price_updated_at="${escapeAttr(lastPriceUpdatedMs)}">
+      <td class="product-select-cell">
+        <input class="product-check" form="bulkForm" type="checkbox" name="skus" value="${escapeAttr(product.sku)}" tabindex="-1" onchange="syncBulkBar()">
       </td>
-      <td class="text-muted">${escapeHtml(index + 1)}</td>
+      <td class="text-muted row-number">${escapeHtml(index + 1)}</td>
       <td>
         ${image
           ? `<img src="${escapeAttr(image)}" alt="" loading="lazy" style="width:42px;height:42px;object-fit:cover;border-radius:10px;border:1px solid var(--c-border)">`
@@ -54,13 +69,14 @@ export function renderProductsPage({
         ${product.brand ? `<div class="cell-sub">${escapeHtml(product.brand)}</div>` : ''}
       </td>
       <td>${escapeHtml(product.category || '—')}</td>
-      <td>${available ? '<span class="badge badge--green">В продаже</span>' : '<span class="badge badge--gray">Не в продаже</span>'}</td>
+      <td>${available ? '<span class="badge badge--green product-status-badge">В продаже</span>' : '<span class="badge badge--gray product-status-badge">Не в продаже</span>'}</td>
       <td>${autoPricing ? '<span class="badge badge--blue">Вкл</span>' : '<span class="badge badge--gray">Выкл</span>'}</td>
       <td><strong>${formatPrice(price)}</strong></td>
+      <td>${renderFirstPlacePriceCell(product)}</td>
       <td>${product.my_position ? escapeHtml(product.my_position) : '—'}</td>
       <td>${formatMinMax(product)}</td>
       <td>${renderWarehouseSummary(warehouses)}</td>
-      <td>${product.last_recommended_price ? renderDateTime(product.updated_at, { dateStyle: 'short', timeStyle: 'short' }) : '—'}</td>
+      <td>${lastPriceUpdatedAt ? renderDateTime(lastPriceUpdatedAt, { dateStyle: 'short', timeStyle: 'short' }) : '—'}</td>
     </tr>`;
   }).join('');
 
@@ -95,7 +111,7 @@ export function renderProductsPage({
       <div class="card card--flush">
         <div class="card__header">
           <div class="flex items-center gap-sm">
-            <label style="cursor:pointer;display:flex;align-items:center;gap:6px">
+            <label class="product-select-all" style="cursor:pointer;display:flex;align-items:center;gap:6px">
               <input type="checkbox" id="selectAll" onchange="toggleAll(this)">
               <span class="text-sm">Выбрать все</span>
             </label>
@@ -114,10 +130,11 @@ export function renderProductsPage({
                 ${sortLink('available', 'Продажа', sort, order, search, availableFilter, categoryFilter)}
                 ${sortLink('auto_pricing_enabled', 'Авторасчет', sort, order, search, availableFilter, categoryFilter)}
                 ${sortLink('upload_price', 'Цена выгрузки', sort, order, search, availableFilter, categoryFilter)}
+                ${sortLink('first_place_price', 'Цена первого места', sort, order, search, availableFilter, categoryFilter)}
                 ${sortLink('my_position', 'Позиция', sort, order, search, availableFilter, categoryFilter)}
                 <th>Мин/Макс</th>
                 <th>Склады</th>
-                <th>Обновление цены</th>
+                ${sortLink('price_updated_at', 'Обновление цены', sort, order, search, availableFilter, categoryFilter)}
               </tr>
             </thead>
             <tbody>
@@ -127,22 +144,40 @@ export function renderProductsPage({
         </div>
       </div>
 
+      <div class="modal-overlay" id="sellerContextModal" aria-hidden="true">
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="sellerContextTitle">
+          <div class="modal__header">
+            <h3 id="sellerContextTitle">Продавцы</h3>
+            <button class="modal__close" type="button" data-close-seller-context aria-label="Закрыть">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M18 6L6 18M6 6l12 12"/></svg>
+            </button>
+          </div>
+          <div class="modal__body">
+            <div id="sellerContextMeta" class="text-sm text-muted" style="margin-bottom:12px"></div>
+            <div id="sellerContextBody"></div>
+          </div>
+        </div>
+      </div>
+
       <div class="bulk-bar" id="bulkBar">
         <span class="bulk-bar__count" id="bulkCount">0 выбрано</span>
         <form id="bulkForm" action="/panel/products/bulk/update" method="post" class="bulk-bar__form" data-async-form="1" data-redirect-on-success="1">
-          <select name="bulkAvailable" class="form-select" style="width:auto;min-width:140px">
-            <option value="">Выставить/снять...</option>
-            <option value="1">Выставить</option>
-            <option value="0">Снять</option>
+          <select name="bulkAvailable" id="bulkAvailableSelect" class="form-select" style="width:auto;min-width:160px">
+            <option value="" id="bulkAvailableNeutral">Выставить/снять</option>
+            <option value="1">В продаже</option>
+            <option value="0">Не в продаже</option>
           </select>
-          <select name="bulkAutopricing" class="form-select" style="width:auto;min-width:160px">
-            <option value="">Авторасчет...</option>
-            <option value="1">Вкл Авторасчет</option>
-            <option value="0">Выкл Авторасчет</option>
+          <select name="bulkAutopricing" id="bulkAutopricingSelect" class="form-select" style="width:auto;min-width:170px">
+            <option value="" id="bulkAutopricingNeutral">Авторасчет</option>
+            <option value="1">Вкл авторасчет</option>
+            <option value="0">Выкл авторасчет</option>
           </select>
-          <input class="form-input" name="bulkMinPrice" type="number" placeholder="Мин цена" style="width:110px">
-          <input class="form-input" name="bulkMaxPrice" type="number" placeholder="Макс цена" style="width:110px">
-          <input class="form-input" name="bulkPreOrder" type="number" placeholder="Предзаказ" min="0" max="30" style="width:110px">
+          <input class="form-input" id="bulkMinPrice" name="bulkMinPrice" type="number" min="0" placeholder="Минимальная цена" aria-label="Минимальная цена" style="width:150px">
+          <input class="form-input" id="bulkMaxPrice" name="bulkMaxPrice" type="number" min="0" placeholder="Максимальная цена" aria-label="Максимальная цена" style="width:160px">
+          <label class="number-with-suffix bulk-number-field" aria-label="Предзаказ">
+            <input class="form-input" id="bulkPreOrder" name="bulkPreOrder" type="number" placeholder="Предзаказ" min="0" max="30">
+            <span>дней</span>
+          </label>
           <details class="bulk-warehouse-details">
             <summary class="btn btn--ghost btn--sm bulk-warehouse-summary">Остатки по складам</summary>
             <div class="bulk-warehouse-panel">
@@ -153,7 +188,7 @@ export function renderProductsPage({
             </div>
           </details>
           <button class="btn btn--primary btn--sm" type="submit">Сохранить</button>
-          <button class="btn btn--danger btn--sm" type="submit" formaction="/panel/products/bulk/delete" formmethod="post" onclick="return confirmBulkDelete()">Удалить</button>
+          <button class="btn btn--danger btn--sm" type="submit" formaction="/panel/products/bulk/delete" formmethod="post" formnovalidate onclick="return confirmBulkDelete()">Удалить</button>
         </form>
       </div>
 
@@ -163,9 +198,57 @@ export function renderProductsPage({
         sessionId: session?.id || null,
         sessionType: session?.type || '',
       }).replace(/</g, '\\u003c')};
+      const sellerContextConfig = ${JSON.stringify({
+        merchantId,
+        ownMerchantIds: uniqueIds([merchantId, ...(Array.isArray(ignoredMerchantIds) ? ignoredMerchantIds : [])]),
+      }).replace(/</g, '\\u003c')};
+      const sellerContextCache = new Map();
+      let currentProductSort = ${JSON.stringify(sort || 'sku')};
+      let currentProductOrder = ${JSON.stringify(order === 'desc' ? 'desc' : 'asc')};
 
       function selectedChecks() {
         return Array.from(document.querySelectorAll('.product-check:checked'));
+      }
+      function visibleProductChecks() {
+        return Array.from(document.querySelectorAll('.product-check')).filter((checkbox) => {
+          const row = checkbox.closest('.product-row');
+          return row && !row.hidden;
+        });
+      }
+      function updateRowSelection() {
+        document.querySelectorAll('.product-row').forEach((row) => {
+          const checkbox = row.querySelector('.product-check');
+          row.classList.toggle('is-selected', Boolean(checkbox && checkbox.checked));
+        });
+      }
+      function selectedStateLabel(checks, dataAttr, labels, fallback) {
+        if (!checks.length) return fallback;
+        const values = new Set(checks.map((checkbox) => {
+          const row = checkbox.closest('.product-row');
+          return row ? row.getAttribute(dataAttr) || '' : '';
+        }));
+        if (values.size !== 1) return fallback;
+        return labels[values.values().next().value] || fallback;
+      }
+      function syncBulkLabels(checks) {
+        const availableNeutral = document.getElementById('bulkAvailableNeutral');
+        const autopricingNeutral = document.getElementById('bulkAutopricingNeutral');
+        const availableSelect = document.getElementById('bulkAvailableSelect');
+        const autopricingSelect = document.getElementById('bulkAutopricingSelect');
+        if (availableNeutral) {
+          availableNeutral.textContent = selectedStateLabel(checks, 'data-available', {
+            1: 'В продаже',
+            0: 'Не в продаже',
+          }, 'Выставить/снять');
+        }
+        if (autopricingNeutral) {
+          autopricingNeutral.textContent = selectedStateLabel(checks, 'data-auto-pricing', {
+            1: 'Вкл авторасчет',
+            0: 'Выкл авторасчет',
+          }, 'Авторасчет');
+        }
+        if (availableSelect && !availableSelect.value) availableSelect.selectedIndex = 0;
+        if (autopricingSelect && !autopricingSelect.value) autopricingSelect.selectedIndex = 0;
       }
       function syncBulkBar() {
         const checks = selectedChecks();
@@ -175,13 +258,15 @@ export function renderProductsPage({
         if (bulkBar) bulkBar.classList.toggle('active', checks.length > 0);
         if (bulkCount) bulkCount.textContent = checks.length + ' выбрано';
         if (selectAll) {
-          const all = Array.from(document.querySelectorAll('.product-check'));
+          const all = visibleProductChecks();
           selectAll.checked = all.length > 0 && checks.length === all.length;
           selectAll.indeterminate = checks.length > 0 && checks.length < all.length;
         }
+        updateRowSelection();
+        syncBulkLabels(checks);
       }
       function toggleAll(source) {
-        document.querySelectorAll('.product-check').forEach((checkbox) => {
+        visibleProductChecks().forEach((checkbox) => {
           checkbox.checked = source.checked;
         });
         syncBulkBar();
@@ -221,12 +306,30 @@ export function renderProductsPage({
 
         const count = document.getElementById('productsVisibleCount');
         if (count) count.textContent = 'Показано: ' + visible + ' (' + active + ' в продаже / ' + inactive + ' не в продаже)';
+        updateVisibleRowNumbers();
         syncBulkBar();
+      }
+      function updateVisibleRowNumbers() {
+        let index = 1;
+        document.querySelectorAll('.product-row').forEach((row) => {
+          const numberCell = row.querySelector('.row-number');
+          if (!numberCell) return;
+          if (row.hidden) {
+            numberCell.textContent = '';
+            return;
+          }
+          numberCell.textContent = String(index);
+          index += 1;
+        });
       }
       function updateFilterUrl() {
         const params = new URLSearchParams();
-        const sort = document.querySelector('input[name="sort"]')?.value || '';
-        const order = document.querySelector('input[name="order"]')?.value || '';
+        const sortInput = document.querySelector('input[name="sort"]');
+        const orderInput = document.querySelector('input[name="order"]');
+        if (sortInput) sortInput.value = currentProductSort || '';
+        if (orderInput) orderInput.value = currentProductOrder || 'asc';
+        const sort = sortInput?.value || '';
+        const order = orderInput?.value || '';
         const search = document.getElementById('productSearch')?.value || '';
         const category = document.getElementById('categoryFilter')?.value || '';
         const available = document.getElementById('availableChips')?.dataset.value || '';
@@ -276,6 +379,115 @@ export function renderProductsPage({
         }
         applyProductFilters();
       }
+      function bindProductRowSelection() {
+        document.querySelectorAll('.product-check').forEach((checkbox) => {
+          checkbox.addEventListener('change', syncBulkBar);
+        });
+        document.querySelector('.table-wrap')?.addEventListener('click', (event) => {
+          const row = event.target.closest('.product-row');
+          if (!row || row.hidden) return;
+          if (event.target.closest('a,button,input,select,textarea,label,details,summary')) return;
+          const checkbox = row.querySelector('.product-check');
+          if (!checkbox) return;
+          checkbox.checked = !checkbox.checked;
+          syncBulkBar();
+        });
+      }
+      function bindProductSorting() {
+        document.querySelectorAll('[data-product-sort]').forEach((button) => {
+          button.addEventListener('click', () => sortProductRows(button.dataset.productSort || 'sku'));
+        });
+        updateSortHeaders();
+      }
+      function applyCurrentProductSort() {
+        const tbody = document.querySelector('tbody');
+        if (!tbody) return;
+        const rows = Array.from(tbody.querySelectorAll('.product-row'));
+        rows.sort((a, b) => compareProductRows(a, b, currentProductSort, currentProductOrder));
+        rows.forEach((row) => tbody.appendChild(row));
+        updateSortHeaders();
+      }
+      function sortProductRows(column) {
+        currentProductOrder = currentProductSort === column && currentProductOrder === 'asc' ? 'desc' : 'asc';
+        currentProductSort = column;
+        const tbody = document.querySelector('tbody');
+        if (!tbody) return;
+        const rows = Array.from(tbody.querySelectorAll('.product-row'));
+        rows.sort((a, b) => compareProductRows(a, b, column, currentProductOrder));
+        rows.forEach((row) => tbody.appendChild(row));
+        updateSortHeaders();
+        updateFilterUrl();
+        applyProductFilters();
+      }
+      function compareProductRows(a, b, column, order) {
+        const left = productSortValue(a, column);
+        const right = productSortValue(b, column);
+        let result = 0;
+        if (typeof left === 'number' && typeof right === 'number') {
+          result = left - right;
+        } else {
+          result = String(left).localeCompare(String(right), 'ru', { numeric: true, sensitivity: 'base' });
+        }
+        return order === 'desc' ? -result : result;
+      }
+      function productSortValue(row, column) {
+        const raw = row.getAttribute('data-sort-' + column) || '';
+        if (['available', 'auto_pricing_enabled', 'upload_price', 'first_place_price', 'my_position', 'price_updated_at'].includes(column)) {
+          const number = Number(raw);
+          return Number.isFinite(number) ? number : 0;
+        }
+        return raw;
+      }
+      function updateSortHeaders() {
+        document.querySelectorAll('[data-product-sort]').forEach((button) => {
+          const column = button.dataset.productSort || '';
+          const th = button.closest('th');
+          const isActive = column === currentProductSort;
+          if (th) {
+            th.classList.toggle('asc', isActive && currentProductOrder === 'asc');
+            th.classList.toggle('desc', isActive && currentProductOrder === 'desc');
+          }
+          button.setAttribute('aria-sort', isActive ? (currentProductOrder === 'asc' ? 'ascending' : 'descending') : 'none');
+        });
+      }
+      function bindBulkValidation() {
+        const form = document.getElementById('bulkForm');
+        const minInput = document.getElementById('bulkMinPrice');
+        const maxInput = document.getElementById('bulkMaxPrice');
+        const validate = () => {
+          const minRaw = minInput?.value ?? '';
+          const maxRaw = maxInput?.value ?? '';
+          const min = minRaw === '' ? null : Number(minRaw);
+          const max = maxRaw === '' ? null : Number(maxRaw);
+          let minMessage = '';
+          let maxMessage = '';
+          if (min !== null && min < 0) minMessage = 'Минимальная цена не может быть отрицательной.';
+          if (max !== null && max < 0) maxMessage = 'Максимальная цена не может быть отрицательной.';
+          if (!minMessage && !maxMessage && min !== null && max !== null && min > max) {
+            minMessage = 'Минимальная цена не должна быть больше максимальной.';
+            maxMessage = 'Максимальная цена не должна быть меньше минимальной.';
+          }
+          if (minInput) minInput.setCustomValidity(minMessage);
+          if (maxInput) maxInput.setCustomValidity(maxMessage);
+          return !minMessage && !maxMessage;
+        };
+        [minInput, maxInput].forEach((input) => input?.addEventListener('input', validate));
+        form?.addEventListener('submit', (event) => {
+          if (event.submitter?.hasAttribute?.('formnovalidate')) return;
+          if (!validate()) {
+            event.preventDefault();
+            (minInput?.validationMessage ? minInput : maxInput)?.reportValidity();
+          }
+        }, { capture: true });
+      }
+      function bindBulkPreOrderSync() {
+        const input = document.getElementById('bulkPreOrder');
+        input?.addEventListener('input', () => {
+          document.querySelectorAll('.bulk-warehouse-pre-order').forEach((warehouseInput) => {
+            warehouseInput.value = input.value;
+          });
+        });
+      }
       function parseSessionDetails(details) {
         if (!details) return {};
         if (typeof details === 'object') return details;
@@ -317,13 +529,158 @@ export function renderProductsPage({
         if (percentNode) percentNode.textContent = progress.percent + '%';
       }
 
+      function normalizeSellerContextId(value) {
+        return String(value || '').trim();
+      }
+
+      function sellerContextOwnIds() {
+        return new Set((Array.isArray(sellerContextConfig.ownMerchantIds) ? sellerContextConfig.ownMerchantIds : [])
+          .map(normalizeSellerContextId)
+          .filter(Boolean));
+      }
+
+      function formatSellerContextPrice(value) {
+        const amount = Number(value || 0);
+        return amount ? amount.toLocaleString('ru-RU') + ' ₸' : '—';
+      }
+
+      function escapeClientHtml(value) {
+        return String(value == null ? '' : value)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#039;');
+      }
+
+      function findSellerContextIndex(rows) {
+        const primaryId = normalizeSellerContextId(sellerContextConfig.merchantId);
+        if (primaryId) {
+          const primaryIndex = rows.findIndex((row) => normalizeSellerContextId(row.seller.merchant_id) === primaryId);
+          if (primaryIndex >= 0) return primaryIndex;
+        }
+        const ownIds = sellerContextOwnIds();
+        if (!ownIds.size) return -1;
+        return rows.findIndex((row) => ownIds.has(normalizeSellerContextId(row.seller.merchant_id)));
+      }
+
+      function renderSellerContextRow(row) {
+        const seller = row.seller || {};
+        const sellerId = normalizeSellerContextId(seller.merchant_id);
+        const primaryId = normalizeSellerContextId(sellerContextConfig.merchantId);
+        const ownIds = sellerContextOwnIds();
+        const isOwn = sellerId && ownIds.has(sellerId);
+        const meta = ['#' + row.position];
+        if (sellerId) meta.push('ID: ' + sellerId);
+        if (seller.merchant_rating) meta.push('Рейтинг: ' + seller.merchant_rating);
+        if (seller.merchant_reviews_quantity) meta.push(seller.merchant_reviews_quantity + ' отз.');
+        if (seller.delivery_type) meta.push(String(seller.delivery_type));
+        return '<div class="seller-row' + (isOwn ? ' is-me' : '') + '">'
+          + '<div>'
+          + '<div class="seller-name">' + escapeClientHtml(seller.merchant_name || seller.merchant_id || '—')
+          + (isOwn ? ' <span class="badge badge--green">' + escapeClientHtml(sellerId === primaryId ? 'Вы' : 'свой ID') + '</span>' : '')
+          + '</div>'
+          + '<div class="seller-meta">' + escapeClientHtml(meta.join(' • ')) + '</div>'
+          + '</div>'
+          + '<div class="seller-price">' + escapeClientHtml(formatSellerContextPrice(seller.price)) + '</div>'
+          + '</div>';
+      }
+
+      function renderSellerContextBody(sellers) {
+        const body = document.getElementById('sellerContextBody');
+        const meta = document.getElementById('sellerContextMeta');
+        if (!body || !meta) return;
+        const rows = (Array.isArray(sellers) ? sellers : []).map((seller, index) => ({
+          seller,
+          position: index + 1,
+        }));
+        if (!rows.length) {
+          meta.textContent = '';
+          body.innerHTML = '<p class="text-muted" style="margin:0">Данных по продавцам пока нет. Они появятся после формирования карточки.</p>';
+          return;
+        }
+        const myIndex = findSellerContextIndex(rows);
+        const visibleRows = myIndex >= 0 ? rows.slice(0, myIndex + 4) : rows.slice(0, 5);
+        if (myIndex >= 0) {
+          meta.textContent = 'Ваша позиция: ' + (myIndex + 1) + ' из ' + rows.length + '. Показаны продавцы до вас и 3 после.';
+        } else {
+          const merchantId = normalizeSellerContextId(sellerContextConfig.merchantId);
+          meta.textContent = merchantId
+            ? 'Merchant ID ' + merchantId + ' не найден среди продавцов. Показаны первые 5.'
+            : 'Merchant ID не задан. Показаны первые 5.';
+        }
+        body.innerHTML = visibleRows.map(renderSellerContextRow).join('');
+      }
+
+      function closeSellerContextModal() {
+        const modal = document.getElementById('sellerContextModal');
+        if (!modal) return;
+        modal.classList.remove('active');
+        modal.setAttribute('aria-hidden', 'true');
+      }
+
+      async function openSellerContextModal(trigger) {
+        const modal = document.getElementById('sellerContextModal');
+        const title = document.getElementById('sellerContextTitle');
+        const meta = document.getElementById('sellerContextMeta');
+        const body = document.getElementById('sellerContextBody');
+        const sku = trigger && trigger.dataset ? trigger.dataset.sku : '';
+        if (!modal || !title || !meta || !body || !sku) return;
+        title.textContent = trigger.dataset.title || sku;
+        meta.textContent = 'SKU: ' + sku;
+        body.innerHTML = '<p class="text-muted" style="margin:0">Загрузка продавцов...</p>';
+        modal.classList.add('active');
+        modal.setAttribute('aria-hidden', 'false');
+        try {
+          if (!sellerContextCache.has(sku)) {
+            const response = await fetch('/api/products/' + encodeURIComponent(sku) + '/sellers', {
+              credentials: 'same-origin',
+              headers: { Accept: 'application/json', 'X-Kaspi-Async': '1' },
+            });
+            if (!response.ok) {
+              let message = 'Не удалось загрузить продавцов.';
+              try {
+                const errorPayload = await response.json();
+                message = errorPayload.error || message;
+              } catch {}
+              throw new Error(message);
+            }
+            sellerContextCache.set(sku, await response.json());
+          }
+          renderSellerContextBody(sellerContextCache.get(sku));
+        } catch (error) {
+          meta.textContent = '';
+          body.innerHTML = '<p class="text-muted" style="margin:0">' + escapeClientHtml(error.message || 'Не удалось загрузить продавцов.') + '</p>';
+        }
+      }
+
       document.addEventListener('DOMContentLoaded', () => {
         syncBulkBar();
         bindProductFilters();
+        bindProductRowSelection();
+        bindProductSorting();
+        applyCurrentProductSort();
+        applyProductFilters();
+        bindBulkValidation();
+        bindBulkPreOrderSync();
+      });
+      document.addEventListener('click', (event) => {
+        const sellerTrigger = event.target.closest('[data-seller-context-trigger]');
+        if (sellerTrigger) {
+          event.preventDefault();
+          openSellerContextModal(sellerTrigger);
+          return;
+        }
+        if (event.target.closest('[data-close-seller-context]') || event.target.id === 'sellerContextModal') {
+          closeSellerContextModal();
+        }
+      });
+      document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') closeSellerContextModal();
       });
       document.addEventListener('click', (event) => {
         if (!selectedChecks().length) return;
-        if (event.target.closest('#bulkBar, .product-check, .table-wrap, .product-filter-bar')) return;
+        if (event.target.closest('#bulkBar, .product-check, .product-select-all, .table-wrap, .product-filter-bar')) return;
         document.querySelectorAll('.product-check').forEach((checkbox) => {
           checkbox.checked = false;
         });
@@ -395,24 +752,6 @@ function renderLivePricePanel({ state, latestSession, session, progress, product
   `;
 }
 
-function renderBuildStatus(buildState, lastParsedAt) {
-  if (buildState?.state === 'building') {
-    return `
-      <span class="badge badge--blue">Формируется</span>
-      <div class="cell-sub">${renderDateTime(buildState.startedAt, { dateStyle: 'short', timeStyle: 'short' })}</div>
-    `;
-  }
-
-  if (lastParsedAt) {
-    return `
-      <span class="badge badge--green">Сформирована</span>
-      <div class="cell-sub">${renderDateTime(lastParsedAt, { dateStyle: 'short', timeStyle: 'short' })}</div>
-    `;
-  }
-
-  return '<span class="badge badge--gray">Не сформирована</span>';
-}
-
 function renderBulkWarehouseControls(products, merchantId) {
   const warehouses = new Map();
 
@@ -426,15 +765,17 @@ function renderBulkWarehouseControls(products, merchantId) {
   }
 
   return Array.from(warehouses.entries()).map(([shortId, fullId]) => `
-      <div class="warehouse-card bulk-warehouse-card">
-        <div class="warehouse-card__head" style="margin-bottom:10px">
+      <div class="warehouse-line bulk-warehouse-line is-open">
+        <input name="bulkStoreId[]" type="hidden" value="${escapeAttr(defaultStoreId(shortId, merchantId) || fullId)}">
+        <div class="warehouse-line__head">
           <div>
             <h4 class="warehouse-card__title">${escapeHtml(shortId)}</h4>
+            <div class="cell-sub">Склад Kaspi</div>
           </div>
         </div>
-        <div class="warehouse-card__fields">
-          <input name="bulkStoreId[]" type="hidden" value="${escapeAttr(defaultStoreId(shortId, merchantId) || fullId)}">
+        <div class="warehouse-line__fields">
           <div class="form-group">
+            <label class="form-label">Состояние</label>
             <select class="form-select form-select--sm" name="bulkWarehouseEnabled[]">
               <option value="">Без изменений</option>
               <option value="1">Вкл</option>
@@ -450,8 +791,11 @@ function renderBulkWarehouseControls(products, merchantId) {
             <input class="form-input form-input--sm" name="bulkActualStock[]" type="number" min="0" placeholder="Напр. 5">
           </div>
           <div class="form-group form-group--full">
-            <label class="form-label">Предзаказ, дней</label>
-            <input class="form-input form-input--sm" name="bulkWarehousePreOrder[]" type="number" min="0" max="30" placeholder="0-30 дней">
+            <label class="form-label">Предзаказ</label>
+            <label class="number-with-suffix">
+              <input class="form-input form-input--sm bulk-warehouse-pre-order" name="bulkWarehousePreOrder[]" type="number" min="0" max="30" placeholder="0-30">
+              <span>дней</span>
+            </label>
           </div>
         </div>
       </div>`).join('');
@@ -485,22 +829,11 @@ function buildSessionProgress(session, details) {
 }
 
 function sortLink(column, label, currentSort, currentOrder, search, availableFilter, categoryFilter) {
-  const order = currentSort === column && currentOrder === 'asc' ? 'desc' : 'asc';
-  const params = new URLSearchParams();
-  params.set('sort', column);
-  params.set('order', order);
-  if (search) params.set('search', search);
-  if (availableFilter !== '') params.set('available', availableFilter);
-  if (categoryFilter) params.set('category', categoryFilter);
   const classes = ['sortable'];
-  let icon = '';
   if (currentSort === column) {
     classes.push(currentOrder);
-    icon = currentOrder === 'asc' 
-      ? '<svg style="display:inline;vertical-align:middle" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 15l7-7 7 7"/></svg>' 
-      : '<svg style="display:inline;vertical-align:middle" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>';
   }
-  return `<th class="${classes.join(' ')}"><a href="/panel/products?${params.toString()}" style="display:inline-flex;align-items:center;gap:4px;color:inherit;text-decoration:none">${escapeHtml(label)}${icon}</a></th>`;
+  return `<th class="${classes.join(' ')}"><button class="sort-button" type="button" data-product-sort="${escapeAttr(column)}">${escapeHtml(label)}</button></th>`;
 }
 
 function renderWarehouseSummary(warehouses) {
@@ -512,10 +845,27 @@ function renderWarehouseSummary(warehouses) {
   }).join('') + (warehouses.length > 3 ? `<div class="cell-sub">+${warehouses.length - 3}</div>` : '');
 }
 
+function renderFirstPlacePriceCell(product) {
+  const price = Number(product.first_place_price || 0);
+  if (!price) return '—';
+  return `
+    <button
+      class="price-click"
+      type="button"
+      data-seller-context-trigger
+      data-sku="${escapeAttr(product.sku)}"
+      data-title="${escapeAttr(product.model || product.sku)}"
+      title="Показать продавцов"
+      style="border:0;background:none;padding:0;font:inherit"
+    >${formatPrice(price)}</button>
+    ${product.first_place_seller ? `<div class="cell-sub">${escapeHtml(product.first_place_seller)}</div>` : ''}
+  `;
+}
+
 function emptyRow() {
   return `
     <tr>
-      <td colspan="12">
+      <td colspan="13">
         <div class="empty">
           <div class="empty__icon">
             <svg width="48" height="48" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"/></svg>
@@ -571,6 +921,10 @@ function defaultStoreId(shortId, merchantId) {
   const value = String(shortId || '').trim();
   if (!value || value.includes('_') || !merchantId) return value;
   return `${merchantId}_${value}`;
+}
+
+function uniqueIds(values = []) {
+  return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];
 }
 
 function jsString(value) {

@@ -6,7 +6,6 @@ export function renderProfilePage({
   merchantName = '',
   ignoredMerchantIds = [],
   panelUser = '',
-  email = '',
   cityId = '',
   message = '',
   error = '',
@@ -23,67 +22,89 @@ export function renderProfilePage({
     content: `
       <div class="profile-grid">
         <section class="card profile-hero">
-          <div class="profile-hero__mark">k</div>
-          <div>
-            <div class="profile-hero__eyebrow">Профиль магазина</div>
-            <h2 class="profile-hero__title">${escapeHtml(merchantName || 'Название магазина не задано')}</h2>
-            <div class="profile-hero__meta">Merchant ID: ${escapeHtml(merchantId || '—')}</div>
+          <div class="profile-hero__head">
+            <div class="profile-hero__mark">k</div>
+            <div>
+              <div class="profile-hero__eyebrow">Магазин</div>
+              <h2 class="profile-hero__title">${escapeHtml(merchantName || 'Название магазина не задано')}</h2>
+              <div class="profile-hero__meta">Короткая сводка по магазину и доступу к панели.</div>
+            </div>
+          </div>
+          <div class="profile-facts">
+            <div class="profile-fact">
+              <span>Merchant ID</span>
+              <strong>${escapeHtml(merchantId || '—')}</strong>
+            </div>
+            <div class="profile-fact">
+              <span>Город Kaspi</span>
+              <strong>${escapeHtml(cityId || '—')}</strong>
+            </div>
+            <div class="profile-fact">
+              <span>Логин панели</span>
+              <strong>${escapeHtml(panelUser || '—')}</strong>
+            </div>
           </div>
         </section>
 
-        <section class="card">
+        <section class="card profile-settings-card">
           <div class="card__header">
             <div>
               <h3 class="card__title">Данные магазина</h3>
-              <div class="card__subtitle">Эти данные используются в XML, расчетах цены и подсветке ваших продавцов.</div>
+              <div class="card__subtitle">Слева краткая карточка магазина, справа рабочие настройки без лишнего визуального шума.</div>
             </div>
           </div>
           <div class="card__body">
             <form method="post" action="/panel/settings/general" data-async-form="1">
               <input type="hidden" name="returnTo" value="/panel/profile">
-              <div class="form-row">
-                <div class="form-group">
-                  ${labelWithHelp('Merchant ID', 'ID магазина Kaspi. Он нужен для XML и чтобы korganBot не конкурировал с вашим же магазином.')}
-                  <input class="form-input" name="merchantId" type="text" value="${escapeAttr(merchantId)}" placeholder="Например, 30452124" required>
+              <input type="hidden" name="merchantId" value="${escapeAttr(merchantId)}">
+              <input type="hidden" name="merchantName" value="${escapeAttr(merchantName)}">
+              <input type="hidden" name="cityId" value="${escapeAttr(cityId)}">
+
+              <div class="profile-summary-grid">
+                <div class="profile-summary-item">
+                  <span>ID магазина</span>
+                  <strong>${escapeHtml(merchantId || '—')}</strong>
                 </div>
-                <div class="form-group">
-                  <label class="form-label">Название магазина</label>
-                  <input class="form-input" name="merchantName" type="text" value="${escapeAttr(merchantName)}" placeholder="Например, ИП БАПИШЕВ">
+                <div class="profile-summary-item profile-summary-item--wide">
+                  <span>Название</span>
+                  <strong>${escapeHtml(merchantName || 'Название магазина не задано')}</strong>
                 </div>
-                <div class="form-group">
-                  ${labelWithHelp('Почта', 'Контактная почта для профиля. Это не меняет логин Kaspi Кабинета.')}
-                  <input class="form-input" name="email" type="email" value="${escapeAttr(email)}" placeholder="mail@example.com">
-                </div>
-                <div class="form-group">
-                  ${labelWithHelp('Город', 'Код города Kaspi для цен в XML. Например, 710000000 или 750000000.')}
-                  <input class="form-input" name="cityId" type="text" value="${escapeAttr(cityId)}" placeholder="710000000">
+                <div class="profile-summary-item">
+                  <span>Город</span>
+                  <strong>${escapeHtml(cityId || '—')}</strong>
                 </div>
               </div>
 
-              <div class="form-section">
-                <div class="flex justify-between items-center gap-md flex-wrap" style="margin-bottom:14px">
-                  <div>
-                    <h4 class="form-section__title">Мои Merchant ID</h4>
-                    <p class="form-section__desc">korganBot исключает эти ID при расчете конкурентной цены.</p>
+              <div class="profile-form-stack">
+                <section class="profile-form-panel">
+                  <div class="profile-form-panel__head">
+                    <div>
+                      <h4 class="form-section__title">Мои Merchant ID</h4>
+                      <p class="form-section__desc">Эти ID исключаются из конкурентов при авторасчете цены.</p>
+                    </div>
+                    <button class="btn btn--ghost btn--sm" type="button" onclick="addIgnoredMerchantRow()">Добавить ID</button>
                   </div>
-                  <button class="btn btn--ghost btn--sm" type="button" onclick="addIgnoredMerchantRow()">Добавить ID</button>
-                </div>
-                <div id="ignoredMerchantList" class="merchant-list">${merchantRows}</div>
-              </div>
+                  <div id="ignoredMerchantList" class="merchant-list">${merchantRows}</div>
+                </section>
 
-              <div class="form-section">
-                <h4 class="form-section__title">Доступ к панели</h4>
-                <p class="form-section__desc">Пароль меняется только если заполнить поле. Пустое поле оставит текущий пароль без изменений.</p>
-                <div class="form-row">
-                  <div class="form-group">
-                    <label class="form-label">Логин</label>
-                    <input class="form-input" name="panelUser" type="text" value="${escapeAttr(panelUser)}" placeholder="admin">
+                <section class="profile-form-panel">
+                  <div class="profile-form-panel__head">
+                    <div>
+                      <h4 class="form-section__title">Доступ к панели</h4>
+                      <p class="form-section__desc">Пароль обновится только если заполнить поле.</p>
+                    </div>
                   </div>
-                  <div class="form-group">
-                    ${labelWithHelp('Пароль', 'Новый пароль для входа в панель. После смены может понадобиться войти снова.')}
-                    <input class="form-input" name="panelPassword" type="password" value="" placeholder="Оставь пустым, если не меняешь">
+                  <div class="profile-access-grid">
+                    <div class="form-group">
+                      <label class="form-label">Логин</label>
+                      <input class="form-input" name="panelUser" type="text" value="${escapeAttr(panelUser)}" placeholder="admin">
+                    </div>
+                    <div class="form-group">
+                      ${labelWithHelp('Пароль', 'Новый пароль для входа в панель. После смены может понадобиться войти снова.')}
+                      <input class="form-input" name="panelPassword" type="password" value="" placeholder="Оставь пустым, если не меняешь">
+                    </div>
                   </div>
-                </div>
+                </section>
               </div>
 
               <div class="form-actions">

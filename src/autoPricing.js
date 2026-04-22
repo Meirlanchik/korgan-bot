@@ -503,9 +503,10 @@ export async function runDbAutoPricingForAll({
     const sourceProducts = manualProductList ? providedProducts : getAllProducts({});
     const products = sourceProducts.filter(
         (p) => p
-            && (manualProductList || p.auto_pricing_enabled)
+            && (manualProductList || Number(p.auto_pricing_enabled) === 1)
+            && (manualProductList || Number(p.available) === 1)
             && (p.shop_link || p.kaspi_id || p.sku || p.model)
-            && (manualProductList || (p.min_price != null && p.max_price != null)),
+            && (manualProductList || (Number(p.min_price) > 0 && Number(p.max_price) > 0)),
     );
 
     const workerCount = normalizeConcurrency(concurrency, products.length);

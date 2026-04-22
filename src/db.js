@@ -651,6 +651,34 @@ export function getAllWarehouseIds() {
         .map((r) => r.store_id);
 }
 
+export function syncWarehouseAvailabilityForProducts(skus = [], available = 1) {
+    const normalizedSkus = [...new Set(
+        (Array.isArray(skus) ? skus : [skus])
+            .map((sku) => String(sku || '').trim())
+            .filter(Boolean),
+    )];
+
+    if (!normalizedSkus.length) {
+        return { changes: 0, availability: 'no' };
+    }
+
+    const availability = Number(available) === 1 ? 'yes' : 'no';
+    const placeholders = normalizedSkus.map((_, index) => `@sku${index}`).join(', ');
+    const params = { availability };
+    normalizedSkus.forEach((sku, index) => {
+        params[`sku${index}`] = sku;
+    });
+
+    const result = getDb()
+        .prepare(`UPDATE product_warehouses SET available = @availability WHERE sku IN (${placeholders})`)
+        .run(params);
+
+    return {
+        changes: result.changes || 0,
+        availability,
+    };
+}
+
 // ─── Sellers ────────────────────────────────────────────
 
 export function getSellers(sku) {
@@ -1288,13 +1316,18 @@ function serializeDetails(details) {
 
 export function getProductsForXml() {
     const d = getDb();
-    const products = d.prepare('SELECT * FROM products WHERE available = 1').all();
+    const products = d.prepare('SELECT * FROM products ORDER BY sku').all();
     const result = [];
 
     for (const p of products) {
         const warehouses = d.prepare(
             'SELECT * FROM product_warehouses WHERE sku = ? AND enabled = 1 ORDER BY store_id',
         ).all(p.sku);
+        const productAvailable = Number(p.available) === 1;
+
+        if (!productAvailable && warehouses.length === 0) {
+            continue;
+        }
 
         result.push({
             sku: p.sku,
@@ -1305,7 +1338,7 @@ export function getProductsForXml() {
                 ? [{ cityId: p.city_id || '710000000', price: String(p.upload_price || p.city_price) }]
                 : [],
             availabilities: warehouses.map((w) => ({
-                available: w.available,
+                available: productAvailable ? normalizeWarehouseAvailability(w.available) : 'no',
                 storeId: w.store_id,
                 preOrder: w.pre_order ? String(w.pre_order) : '',
                 stockCount: w.stock_count ? String(w.stock_count) : '',
@@ -1314,6 +1347,10 @@ export function getProductsForXml() {
     }
 
     return result;
+}
+
+function normalizeWarehouseAvailability(value) {
+    return String(value || '').trim().toLowerCase() === 'no' ? 'no' : 'yes';
 }
 
 // ─── Import from XML catalog ────────────────────────────

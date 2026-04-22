@@ -3,42 +3,52 @@ import { renderLayout } from './layout.js';
 import { kaspiImageUrl } from '../helpers/product.js';
 
 export function renderProductDetailPage({
-    product,
-    warehouses,
-    sellers,
-    history = [],
-    buildState = null,
-    merchantId,
-    ignoredMerchantIds = [],
-    message,
-    error,
+  product,
+  warehouses,
+  sellers,
+  history = [],
+  buildState = null,
+  merchantId,
+  ignoredMerchantIds = [],
+  message,
+  error,
 }) {
-    const images = safeJsonParse(product.images, []);
-    const currentKaspiPrice = product.last_kaspi_price || product.city_price || product.price || 0;
-    const uploadPrice = product.upload_price || product.city_price || product.price || 0;
-    const priceDiff = product.first_place_price ? uploadPrice - product.first_place_price : 0;
-    const parsedAt = product.last_parsed_at
-        ? formatDateTime(product.last_parsed_at, { dateStyle: 'short', timeStyle: 'short' })
-        : '—';
-    const resolvedKaspiCode = resolvedKaspiCodeForDisplay(product);
-    const pricingPreviewData = JSON.stringify({
-        sellers,
-        ignoredMerchantIds,
-        merchantId,
-        firstPlacePrice: Number(product.first_place_price || 0),
-        currentUploadPrice: Number(uploadPrice || 0),
-    }).replace(/</g, '\\u003c');
-    const historyItems = Array.isArray(history) ? history : [];
-    const historySummary = summarizeHistory(historyItems);
-    const buildStatusLabel = buildState?.state === 'building'
-        ? `Формируется с ${formatDateTime(buildState.startedAt, { dateStyle: 'short', timeStyle: 'short' })}`
-        : product.last_parsed_at
-            ? `Сформирована ${formatDateTime(product.last_parsed_at, { dateStyle: 'short', timeStyle: 'short' })}`
-            : 'Не сформирована';
+  const images = safeJsonParse(product.images, []);
+  const currentKaspiPrice = product.last_kaspi_price || product.city_price || product.price || 0;
+  const uploadPrice = product.upload_price || product.city_price || product.price || 0;
+  const priceDiff = product.first_place_price ? uploadPrice - product.first_place_price : 0;
+  const parsedAt = product.last_parsed_at
+    ? formatDateTime(product.last_parsed_at, { dateStyle: 'short', timeStyle: 'short' })
+    : '—';
+  const resolvedKaspiCode = resolvedKaspiCodeForDisplay(product);
+  const pricingPreviewData = JSON.stringify({
+    sellers,
+    ignoredMerchantIds,
+    merchantId,
+    firstPlacePrice: Number(product.first_place_price || 0),
+    currentUploadPrice: Number(uploadPrice || 0),
+  }).replace(/</g, '\\u003c');
+  const historyItems = Array.isArray(history) ? history : [];
+  const historySummary = summarizeHistory(historyItems);
+  const buildStatusLabel = buildState?.state === 'building'
+    ? `Формируется с ${formatDateTime(buildState.startedAt, { dateStyle: 'short', timeStyle: 'short' })}`
+    : product.last_parsed_at
+      ? `Сформирована ${formatDateTime(product.last_parsed_at, { dateStyle: 'short', timeStyle: 'short' })}`
+      : 'Не сформирована';
+  const availabilityBadge = product.available
+    ? '<span class="badge badge--green product-status-badge">В продаже</span>'
+    : '<span class="badge badge--gray product-status-badge">Не в продаже</span>';
+  const priceSummary = renderPriceSummary({
+    currentKaspiPrice,
+    uploadPrice,
+    firstPlacePrice: product.first_place_price,
+    firstPlaceSeller: product.first_place_seller,
+    priceDiff,
+  });
 
-    const galleryImages = images.map((img) => kaspiImageUrl(img)).filter(Boolean);
-    const gallery = galleryImages.length
-        ? `
+  const galleryImages = images.map((img) => kaspiImageUrl(img)).filter(Boolean);
+  const gallery = galleryImages.length
+    ? `
           <div class="gallery-viewer" data-gallery>
             <button class="gallery-nav gallery-nav--prev" type="button" data-gallery-prev aria-label="Предыдущее фото">‹</button>
             <img class="gallery-main" src="${escapeAttr(galleryImages[0])}" alt="" data-gallery-main loading="eager">
@@ -48,11 +58,11 @@ export function renderProductDetailPage({
             </div>
           </div>
         `
-        : '<div class="gallery-empty">Фото пока нет</div>';
+    : '<div class="gallery-empty">Фото пока нет</div>';
 
-    const warehouseCards = buildWarehouseDescriptors(warehouses, merchantId, product.pre_order).slice(0, 5).map((warehouse) => {
-        const fullId = warehouse.store_id || '';
-        return `
+  const warehouseCards = buildWarehouseDescriptors(warehouses, merchantId, product.pre_order).slice(0, 5).map((warehouse) => {
+    const fullId = warehouse.store_id || '';
+    return `
       <div class="warehouse-line${warehouse.enabled ? ' is-open' : ''}">
         <input type="hidden" name="storeId[]" value="${escapeAttr(fullId || defaultStoreId(warehouse.short_id, merchantId))}">
         <input type="hidden" name="warehouseEnabled[]" value="${warehouse.enabled ? '1' : '0'}" data-warehouse-enabled-value>
@@ -75,19 +85,21 @@ export function renderProductDetailPage({
             <input class="form-input form-input--sm" name="actualStock[]" type="number" min="0" value="${warehouse.actual_stock}">
           </div>
           <div class="form-group">
-            <label class="form-label">Предзаказ, дней</label>
-            <input class="form-input form-input--sm warehouse-pre-order" name="warehousePreOrder[]" type="number" min="0" max="30" value="${warehouse.pre_order}">
+            <label class="number-with-suffix" title="Предзаказ">
+              <input class="form-input form-input--sm warehouse-pre-order" name="warehousePreOrder[]" type="number" min="0" max="30" value="${warehouse.pre_order}" aria-label="Предзаказ склада ${escapeAttr(warehouse.short_id)}">
+              <span>дней</span>
+            </label>
           </div>
         </div>
       </div>`;
-    }).join('');
+  }).join('');
 
-    const myMerchant = String(merchantId || '').trim();
-    const ownMerchantIds = new Set([myMerchant, ...ignoredMerchantIds].map((value) => String(value || '').trim()).filter(Boolean));
-    const sellerRows = sellers.map((seller) => {
-        const sellerId = String(seller.merchant_id || '').trim();
-        const isMe = sellerId && ownMerchantIds.has(sellerId);
-        return `<div class="seller-row${isMe ? ' is-me' : ''}">
+  const myMerchant = String(merchantId || '').trim();
+  const ownMerchantIds = new Set([myMerchant, ...ignoredMerchantIds].map((value) => String(value || '').trim()).filter(Boolean));
+  const sellerRows = sellers.map((seller) => {
+    const sellerId = String(seller.merchant_id || '').trim();
+    const isMe = sellerId && ownMerchantIds.has(sellerId);
+    return `<div class="seller-row${isMe ? ' is-me' : ''}">
       <div>
         <div class="seller-name">${escapeHtml(seller.merchant_name || seller.merchant_id || '—')}${isMe ? ` <span class="badge badge--green">${sellerId === myMerchant ? 'Вы' : 'свой ID'}</span>` : ''}</div>
         <div class="seller-meta">
@@ -98,16 +110,16 @@ export function renderProductDetailPage({
       </div>
       <div class="seller-price">${formatPrice(seller.price)}</div>
     </div>`;
-    }).join('');
+  }).join('');
 
-    const historyRows = historyItems.map(renderHistoryRow).join('');
+  const historyRows = historyItems.map(renderHistoryRow).join('');
 
-    return renderLayout({
-        title: `${product.model || product.sku}`,
-        activePage: 'products',
-        message,
-        error,
-        content: `
+  return renderLayout({
+    title: `${product.model || product.sku}`,
+    activePage: 'products',
+    message,
+    error,
+    content: `
       <div style="margin-bottom:16px">
         <a href="/panel/products" class="btn btn--ghost btn--sm" style="text-decoration:none">&larr; Назад к товарам</a>
       </div>
@@ -152,7 +164,8 @@ export function renderProductDetailPage({
 
                 <div class="compact-controls">
                   <div class="compact-control">
-                    <span class="form-label">В продаже</span>
+                    <span class="form-label">Продажа</span>
+                    ${availabilityBadge}
                     <input type="hidden" name="available" value="${product.available ? '1' : '0'}" data-toggle-value="available">
                     <label class="toggle">
                       <input type="checkbox" data-hidden-toggle="available"${product.available ? ' checked' : ''}>
@@ -160,19 +173,15 @@ export function renderProductDetailPage({
                     </label>
                   </div>
                   <div class="form-group" style="max-width:150px;margin-bottom:0">
-                    <label class="form-label">Предзаказ, дней</label>
-                    <input class="form-input form-input--sm" id="productPreOrder" name="pre_order" type="number" min="0" max="30" value="${product.pre_order || 0}">
+                    <label class="form-label">Предзаказ</label>
+                    <label class="number-with-suffix">
+                      <input class="form-input form-input--sm" id="productPreOrder" name="pre_order" type="number" min="0" max="30" value="${product.pre_order || 0}">
+                      <span>дней</span>
+                    </label>
                   </div>
                 </div>
+                ${priceSummary}
               </div>
-            </div>
-
-            <div class="price-insight-grid">
-              ${priceInsight('Цена на Kaspi сейчас', formatPrice(currentKaspiPrice), 'Текущая цена из последнего чтения Kaspi')}
-              ${priceInsight('Цена выгрузки', `<span id="uploadPriceValue">${formatPrice(uploadPrice)}</span>`, 'Эта цена попадет в XML')}
-              ${priceInsight('1-е место', product.first_place_price ? `${formatPrice(product.first_place_price)}<small>${escapeHtml(product.first_place_seller || '?')}</small>` : '—', 'Самый дешевый продавец')}
-              ${priceInsight('Разница', `<span id="uploadPriceDiff" style="color:${priceDiff > 0 ? 'var(--c-danger)' : priceDiff < 0 ? 'var(--c-success)' : 'inherit'}">${priceDiff ? `${priceDiff > 0 ? '+' : ''}${formatPrice(priceDiff)}` : '—'}</span>`, 'Цена выгрузки минус 1-е место')}
-            </div>
             </div>
           </div>
         </div>
@@ -245,17 +254,11 @@ export function renderProductDetailPage({
       </form>
 
       <div class="card" style="margin-top:16px;padding:18px 24px">
-        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-          <button class="btn btn--primary" type="submit" form="product-save-form">Сохранить</button>
-          <form action="/panel/products/${encodeURIComponent(product.sku)}/auto-price" method="post" data-async-form="1" data-redirect-on-success="1" style="margin:0">
-            <button class="btn btn--accent btn--sm" type="submit">Рассчитать</button>
-          </form>
-          <form action="/panel/products/${encodeURIComponent(product.sku)}/parse" method="post" data-async-form="1" data-redirect-on-success="1" style="margin:0">
-            <button class="btn btn--ghost btn--sm" type="submit">Сформировать</button>
-          </form>
+        <div class="product-detail-actions">
+          <button class="btn btn--primary product-detail-action" type="submit" form="product-save-form">Сохранить</button>
           <div style="flex:1"></div>
-          <form action="/panel/products/${encodeURIComponent(product.sku)}/delete" method="post" data-async-form="1" data-redirect-on-success="1" style="margin:0" onsubmit="return confirm('Удалить товар?')">
-            <button class="btn btn--danger btn--sm" type="submit">Удалить</button>
+          <form action="/panel/products/${encodeURIComponent(product.sku)}/delete" method="post" data-async-form="1" data-redirect-on-success="1" class="product-detail-action-form" onsubmit="return confirm('Удалить товар?')">
+            <button class="btn btn--danger product-detail-action" type="submit">Удалить</button>
           </form>
         </div>
       </div>
@@ -310,12 +313,11 @@ export function renderProductDetailPage({
 
       if (productForm) {
         productForm.addEventListener('submit', (event) => {
-          const min = Number(minPriceInput?.value || 0);
-          const max = Number(maxPriceInput?.value || 0);
-          const step = Number(priceStepInput?.value || 0);
-          if (min < 0 || max < 0 || step < 1 || (min > 0 && max > 0 && min > max)) {
+          if (!validateProductPrices()) {
             event.preventDefault();
-            window.KaspiPanel?.showAlert?.('error', 'Проверь цены: минимум не может быть больше максимума, шаг должен быть от 1.');
+            const invalidInput = [minPriceInput, maxPriceInput, priceStepInput].find((input) => input && !input.checkValidity());
+            invalidInput?.reportValidity();
+            window.KaspiPanel?.showAlert?.('error', invalidInput?.validationMessage || 'Проверь цены перед сохранением.');
           }
         }, { capture: true });
       }
@@ -343,10 +345,37 @@ export function renderProductDetailPage({
       })();
 
       [minPriceInput, maxPriceInput, priceStepInput].forEach((input) => {
-        if (input) input.addEventListener('input', updateUploadPricePreview);
+        if (input) input.addEventListener('input', () => {
+          validateProductPrices();
+          updateUploadPricePreview();
+        });
       });
 
+      validateProductPrices();
       updateUploadPricePreview();
+
+      function validateProductPrices() {
+        const minRaw = minPriceInput?.value ?? '';
+        const maxRaw = maxPriceInput?.value ?? '';
+        const stepRaw = priceStepInput?.value ?? '';
+        const min = minRaw === '' ? null : Number(minRaw);
+        const max = maxRaw === '' ? null : Number(maxRaw);
+        const step = stepRaw === '' ? null : Number(stepRaw);
+        let minMessage = '';
+        let maxMessage = '';
+        let stepMessage = '';
+        if (min !== null && min < 0) minMessage = 'Минимальная цена не может быть отрицательной.';
+        if (max !== null && max < 0) maxMessage = 'Максимальная цена не может быть отрицательной.';
+        if (!minMessage && !maxMessage && min !== null && max !== null && min > max) {
+          minMessage = 'Минимальная цена не должна быть больше максимальной.';
+          maxMessage = 'Максимальная цена не должна быть меньше минимальной.';
+        }
+        if (step !== null && step < 1) stepMessage = 'Шаг авторасчета должен быть от 1 тенге.';
+        if (minPriceInput) minPriceInput.setCustomValidity(minMessage);
+        if (maxPriceInput) maxPriceInput.setCustomValidity(maxMessage);
+        if (priceStepInput) priceStepInput.setCustomValidity(stepMessage);
+        return !minMessage && !maxMessage && !stepMessage;
+      }
 
       function updateUploadPricePreview() {
         const preview = calculatePreviewPrice();
@@ -433,49 +462,49 @@ export function renderProductDetailPage({
       }
       </script>
     `,
-    });
+  });
 }
 
 function renderHistoryChart(historyItems) {
-    const points = historyItems
-        .filter((item) => positiveNumber(item.new_upload_price) || positiveNumber(item.kaspi_price))
-        .slice(0, 24)
-        .reverse();
+  const points = historyItems
+    .filter((item) => positiveNumber(item.new_upload_price) || positiveNumber(item.kaspi_price))
+    .slice(0, 24)
+    .reverse();
 
-    if (!points.length) {
-        return '<div class="text-muted">График появится, когда накопится история цен по Kaspi и цене выгрузки.</div>';
+  if (!points.length) {
+    return '<div class="text-muted">График появится, когда накопится история цен по Kaspi и цене выгрузки.</div>';
+  }
+
+  const width = 760;
+  const height = 220;
+  const padX = 28;
+  const padY = 24;
+  const values = points
+    .flatMap((item) => [positiveNumber(item.new_upload_price), positiveNumber(item.kaspi_price)])
+    .filter(Boolean);
+  const minValue = Math.min(...values);
+  const maxValue = Math.max(...values);
+  const range = Math.max(1, maxValue - minValue);
+  const stepX = points.length > 1 ? (width - padX * 2) / (points.length - 1) : 0;
+
+  const yFor = (value) => height - padY - ((value - minValue) / range) * (height - padY * 2);
+  const xFor = (index) => padX + stepX * index;
+
+  const uploadSeries = buildSeries(points, 'new_upload_price', xFor, yFor);
+  const kaspiSeries = buildSeries(points, 'kaspi_price', xFor, yFor);
+  const guides = [0, 0.25, 0.5, 0.75, 1].map((ratio) => {
+    const y = padY + (height - padY * 2) * ratio;
+    return `<line x1="${padX}" y1="${y}" x2="${width - padX}" y2="${y}" stroke="#e6edf5" stroke-dasharray="4 4"></line>`;
+  }).join('');
+  const labels = points.map((item, index) => {
+    if (points.length > 6 && index % Math.ceil(points.length / 6) !== 0 && index !== points.length - 1) {
+      return '';
     }
+    const x = xFor(index);
+    return `<text x="${x}" y="${height - 6}" text-anchor="middle" font-size="10" fill="#8b93a1">${escapeHtml(formatShortDate(item.created_at))}</text>`;
+  }).join('');
 
-    const width = 760;
-    const height = 220;
-    const padX = 28;
-    const padY = 24;
-    const values = points
-        .flatMap((item) => [positiveNumber(item.new_upload_price), positiveNumber(item.kaspi_price)])
-        .filter(Boolean);
-    const minValue = Math.min(...values);
-    const maxValue = Math.max(...values);
-    const range = Math.max(1, maxValue - minValue);
-    const stepX = points.length > 1 ? (width - padX * 2) / (points.length - 1) : 0;
-
-    const yFor = (value) => height - padY - ((value - minValue) / range) * (height - padY * 2);
-    const xFor = (index) => padX + stepX * index;
-
-    const uploadSeries = buildSeries(points, 'new_upload_price', xFor, yFor);
-    const kaspiSeries = buildSeries(points, 'kaspi_price', xFor, yFor);
-    const guides = [0, 0.25, 0.5, 0.75, 1].map((ratio) => {
-        const y = padY + (height - padY * 2) * ratio;
-        return `<line x1="${padX}" y1="${y}" x2="${width - padX}" y2="${y}" stroke="#e6edf5" stroke-dasharray="4 4"></line>`;
-    }).join('');
-    const labels = points.map((item, index) => {
-        if (points.length > 6 && index % Math.ceil(points.length / 6) !== 0 && index !== points.length - 1) {
-            return '';
-        }
-        const x = xFor(index);
-        return `<text x="${x}" y="${height - 6}" text-anchor="middle" font-size="10" fill="#8b93a1">${escapeHtml(formatShortDate(item.created_at))}</text>`;
-    }).join('');
-
-    return `
+  return `
       <div style="border:1px solid var(--c-border);border-radius:16px;padding:16px;background:linear-gradient(180deg,#fcfdff,#f6f9fc)">
         <div class="flex gap-md flex-wrap items-center" style="margin-bottom:12px">
           <div class="text-sm"><span style="display:inline-block;width:12px;height:12px;border-radius:999px;background:#1565c0;margin-right:6px;vertical-align:middle"></span>Цена выгрузки</div>
@@ -497,40 +526,40 @@ function renderHistoryChart(historyItems) {
 }
 
 function buildSeries(historyItems, field, xFor, yFor) {
-    const points = historyItems
-        .map((item, index) => {
-            const value = positiveNumber(item[field]);
-            return value
-                ? { x: xFor(index), y: yFor(value), value }
-                : null;
-        })
-        .filter(Boolean);
+  const points = historyItems
+    .map((item, index) => {
+      const value = positiveNumber(item[field]);
+      return value
+        ? { x: xFor(index), y: yFor(value), value }
+        : null;
+    })
+    .filter(Boolean);
 
-    if (!points.length) {
-        return { polyline: '', points: '' };
-    }
+  if (!points.length) {
+    return { polyline: '', points: '' };
+  }
 
-    const color = field === 'kaspi_price' ? '#ef6c00' : '#1565c0';
-    return {
-        polyline: `<polyline fill="none" stroke="${color}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="${points.map((point) => `${point.x},${point.y}`).join(' ')}"></polyline>`,
-        points: points.map((point) => `<circle cx="${point.x}" cy="${point.y}" r="3.5" fill="${color}"></circle>`).join(''),
-    };
+  const color = field === 'kaspi_price' ? '#ef6c00' : '#1565c0';
+  return {
+    polyline: `<polyline fill="none" stroke="${color}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="${points.map((point) => `${point.x},${point.y}`).join(' ')}"></polyline>`,
+    points: points.map((point) => `<circle cx="${point.x}" cy="${point.y}" r="3.5" fill="${color}"></circle>`).join(''),
+  };
 }
 
 function renderHistoryRow(item) {
-    const sessionLink = item.session_id
-        ? `<a href="/panel/parse-sessions/${encodeURIComponent(item.session_id)}" class="text-sm">Сессия #${escapeHtml(item.session_id)}</a>`
-        : '';
-    const reason = formatReason(item.reason);
-    const details = parseHistoryDetails(item.details);
-    const extra = [
-        item.kaspi_price ? `Kaspi: ${formatPrice(item.kaspi_price)}` : '',
-        item.competitor_price ? `Конкурент: ${formatPrice(item.competitor_price)}` : '',
-        reason !== '—' ? `Причина: ${escapeHtml(reason)}` : '',
-        details.kaspiId ? `Kaspi ID: ${escapeHtml(details.kaspiId)}` : '',
-    ].filter(Boolean);
+  const sessionLink = item.session_id
+    ? `<a href="/panel/parse-sessions/${encodeURIComponent(item.session_id)}" class="text-sm">Сессия #${escapeHtml(item.session_id)}</a>`
+    : '';
+  const reason = formatReason(item.reason);
+  const details = parseHistoryDetails(item.details);
+  const extra = [
+    item.kaspi_price ? `Kaspi: ${formatPrice(item.kaspi_price)}` : '',
+    item.competitor_price ? `Конкурент: ${formatPrice(item.competitor_price)}` : '',
+    reason !== '—' ? `Причина: ${escapeHtml(reason)}` : '',
+    details.kaspiId ? `Kaspi ID: ${escapeHtml(details.kaspiId)}` : '',
+  ].filter(Boolean);
 
-    return `<tr>
+  return `<tr>
       <td>
         <div>${escapeHtml(formatDateTime(item.created_at, { dateStyle: 'short', timeStyle: 'short' }))}</div>
         ${sessionLink ? `<div class="cell-sub">${sessionLink}</div>` : ''}
@@ -553,86 +582,127 @@ function renderHistoryRow(item) {
 }
 
 function summarizeHistory(historyItems) {
-    const items = Array.isArray(historyItems) ? historyItems : [];
-    const lastCalculation = items.find((item) => item.event_type === 'light_parse' && item.status === 'success');
-    const lastCardBuild = items.find((item) => item.event_type === 'full_parse' && item.status === 'success');
-    const priceChanges = items.filter((item) => {
-        const oldPrice = positiveNumber(item.old_upload_price);
-        const newPrice = positiveNumber(item.new_upload_price);
-        return oldPrice && newPrice && oldPrice !== newPrice;
-    }).length;
+  const items = Array.isArray(historyItems) ? historyItems : [];
+  const lastCalculation = items.find((item) => item.event_type === 'light_parse' && item.status === 'success');
+  const lastCardBuild = items.find((item) => item.event_type === 'full_parse' && item.status === 'success');
+  const priceChanges = items.filter((item) => {
+    const oldPrice = positiveNumber(item.old_upload_price);
+    const newPrice = positiveNumber(item.new_upload_price);
+    return oldPrice && newPrice && oldPrice !== newPrice;
+  }).length;
 
-    return {
-        total: String(items.length),
-        priceChanges: String(priceChanges),
-        lastCalculation: lastCalculation ? formatDateTime(lastCalculation.created_at, { dateStyle: 'short', timeStyle: 'short' }) : '—',
-        lastCardBuild: lastCardBuild ? formatDateTime(lastCardBuild.created_at, { dateStyle: 'short', timeStyle: 'short' }) : '—',
-    };
+  return {
+    total: String(items.length),
+    priceChanges: String(priceChanges),
+    lastCalculation: lastCalculation ? formatDateTime(lastCalculation.created_at, { dateStyle: 'short', timeStyle: 'short' }) : '—',
+    lastCardBuild: lastCardBuild ? formatDateTime(lastCardBuild.created_at, { dateStyle: 'short', timeStyle: 'short' }) : '—',
+  };
 }
 
 function renderHistoryPriceChange(item) {
-    const oldPrice = positiveNumber(item.old_upload_price);
-    const newPrice = positiveNumber(item.new_upload_price);
+  const oldPrice = positiveNumber(item.old_upload_price);
+  const newPrice = positiveNumber(item.new_upload_price);
 
-    if (oldPrice && newPrice) {
-        return `${formatPrice(oldPrice)} → ${formatPrice(newPrice)}`;
-    }
-    if (newPrice) {
-        return formatPrice(newPrice);
-    }
-    return '—';
+  if (oldPrice && newPrice) {
+    return `${formatPrice(oldPrice)} → ${formatPrice(newPrice)}`;
+  }
+  if (newPrice) {
+    return formatPrice(newPrice);
+  }
+  return '—';
 }
 
 function historyEventLabel(eventType) {
-    const map = {
-        catalog_import: 'Новый товар',
-        catalog_update: 'Обновление из файла',
-        full_parse: 'Сформировать карточку',
-        light_parse: 'Расчет цены',
-    };
-    return map[eventType] || eventType || 'Событие';
+  const map = {
+    catalog_import: 'Новый товар',
+    catalog_update: 'Обновление из файла',
+    full_parse: 'Сформировать карточку',
+    light_parse: 'Расчет цены',
+  };
+  return map[eventType] || eventType || 'Событие';
 }
 
 function historySourceBadge(source) {
-    const normalized = String(source || '').trim();
-    if (normalized === 'auto') return '<span class="badge badge--blue">Авто</span>';
-    if (normalized === 'import') return '<span class="badge badge--gray">Импорт</span>';
-    return '<span class="badge badge--gray">Ручной</span>';
+  const normalized = String(source || '').trim();
+  if (normalized === 'auto') return '<span class="badge badge--blue">Авто</span>';
+  if (normalized === 'import') return '<span class="badge badge--gray">Импорт</span>';
+  return '<span class="badge badge--gray">Ручной</span>';
 }
 
 function historyStatusBadge(status) {
-    if (status === 'success') return '<span class="badge badge--green">OK</span>';
-    if (status === 'partial') return '<span class="badge badge--warning">Частично</span>';
-    return '<span class="badge badge--red">Ошибка</span>';
+  if (status === 'success') return '<span class="badge badge--green">OK</span>';
+  if (status === 'partial') return '<span class="badge badge--warning">Частично</span>';
+  return '<span class="badge badge--red">Ошибка</span>';
 }
 
 function parseHistoryDetails(detailsText) {
-    if (!detailsText) return {};
-    try {
-        const parsed = JSON.parse(detailsText);
-        return parsed && typeof parsed === 'object' ? parsed : {};
-    } catch {
-        return {};
-    }
+  if (!detailsText) return {};
+  try {
+    const parsed = JSON.parse(detailsText);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
 }
 
 function formatShortDate(value) {
-    const normalized = formatDateTime(value, { dateStyle: 'short', timeStyle: undefined, fallback: '—' });
-    return normalized.replace(/\sг\.$/, '');
+  const normalized = formatDateTime(value, { dateStyle: 'short', timeStyle: undefined, fallback: '—' });
+  return normalized.replace(/\sг\.$/, '');
 }
 
 function positiveNumber(value) {
-    const number = Number(value);
-    return Number.isFinite(number) && number > 0 ? number : 0;
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : 0;
 }
 
 function formatPrice(n) {
-    if (!n) return '—';
-    return `${Number(n).toLocaleString('ru-RU')} ₸`;
+  if (!n) return '—';
+  return `${Number(n).toLocaleString('ru-RU')} ₸`;
+}
+
+function renderPriceSummary({
+  currentKaspiPrice,
+  uploadPrice,
+  firstPlacePrice,
+  firstPlaceSeller,
+  priceDiff,
+}) {
+  const diffValue = Number(priceDiff || 0);
+  const diffText = diffValue ? `${diffValue > 0 ? '+' : ''}${formatPrice(diffValue)}` : '—';
+  const diffTone = diffValue > 0 ? 'danger' : diffValue < 0 ? 'success' : 'neutral';
+  return `
+    <div class="product-price-summary">
+      <div class="product-price-summary__head">
+        <div>
+          <div class="product-price-summary__label">Цены</div>
+          <div class="product-price-summary__title">Текущая картина по карточке</div>
+        </div>
+      </div>
+      <div class="product-price-summary__grid">
+        <div class="product-price-summary__item">
+          <span>Цена на Kaspi сейчас</span>
+          <strong>${formatPrice(currentKaspiPrice)}</strong>
+        </div>
+        <div class="product-price-summary__item">
+          <span>Цена выгрузки</span>
+          <strong id="uploadPriceValue">${formatPrice(uploadPrice)}</strong>
+        </div>
+        <div class="product-price-summary__item">
+          <span>1-е место</span>
+          <strong>${firstPlacePrice ? formatPrice(firstPlacePrice) : '—'}</strong>
+          ${firstPlaceSeller ? `<small>${escapeHtml(firstPlaceSeller)}</small>` : ''}
+        </div>
+        <div class="product-price-summary__item product-price-summary__item--${diffTone}">
+          <span>Разница</span>
+          <strong id="uploadPriceDiff">${diffText}</strong>
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 function priceInsight(label, value, hint = '') {
-    return `
+  return `
       <div class="price-insight">
         <div class="price-insight__label">${escapeHtml(label)}</div>
         <div class="price-insight__value">${value}</div>
@@ -642,7 +712,7 @@ function priceInsight(label, value, hint = '') {
 }
 
 function labelWithHelp(label, help) {
-    return `
+  return `
       <div class="label-row">
         <label class="form-label">${escapeHtml(label)}</label>
         <button class="help-dot" type="button" data-help="${escapeAttr(help)}">?</button>
@@ -651,89 +721,89 @@ function labelWithHelp(label, help) {
 }
 
 function formatReason(value) {
-    const reasonMap = {
-        BEAT_COMPETITOR: 'Ниже конкурента на шаг',
-        MIN_PRICE_FLOOR: 'Упор в минимальную цену',
-        MAX_PRICE_CAP: 'Упор в максимальную цену',
-        NO_COMPETITOR_TO_BEAT: 'Нет конкурента выше минимума',
-    };
-    return reasonMap[value] || value || '—';
+  const reasonMap = {
+    BEAT_COMPETITOR: 'Ниже конкурента на шаг',
+    MIN_PRICE_FLOOR: 'Упор в минимальную цену',
+    MAX_PRICE_CAP: 'Упор в максимальную цену',
+    NO_COMPETITOR_TO_BEAT: 'Нет конкурента выше минимума',
+  };
+  return reasonMap[value] || value || '—';
 }
 
 function safeJsonParse(str, fallback) {
-    try {
-        return JSON.parse(str);
-    } catch {
-        return fallback;
-    }
+  try {
+    return JSON.parse(str);
+  } catch {
+    return fallback;
+  }
 }
 
 function resolvedKaspiCodeForDisplay(product) {
-    const kaspiCode = String(product?.kaspi_id || '').trim();
-    if (!kaspiCode) return '';
+  const kaspiCode = String(product?.kaspi_id || '').trim();
+  if (!kaspiCode) return '';
 
-    const skuCode = String(product?.sku || '')
-        .trim()
-        .split(/[-–—]/)[0]
-        .trim()
-        .split('_')[0]
-        .trim();
+  const skuCode = String(product?.sku || '')
+    .trim()
+    .split(/[-–—]/)[0]
+    .trim()
+    .split('_')[0]
+    .trim();
 
-    return kaspiCode && kaspiCode !== skuCode ? kaspiCode : '';
+  return kaspiCode && kaspiCode !== skuCode ? kaspiCode : '';
 }
 
 function shortStoreId(id) {
-    const value = String(id || '').trim();
-    const match = value.match(/_?(PP\d+)$/i);
-    return match ? match[1].toUpperCase() : value.toUpperCase();
+  const value = String(id || '').trim();
+  const match = value.match(/_?(PP\d+)$/i);
+  return match ? match[1].toUpperCase() : value.toUpperCase();
 }
 
 function buildWarehouseDescriptors(warehouses, merchantId, defaultPreOrder = 0) {
-    const defaults = ['PP1', 'PP2', 'PP3', 'PP4', 'PP5'];
-    const byShortId = new Map();
+  const defaults = ['PP1', 'PP2', 'PP3', 'PP4', 'PP5'];
+  const byShortId = new Map();
 
-    for (const warehouse of warehouses || []) {
-        const shortId = shortStoreId(warehouse.store_id);
-        if (!shortId) continue;
-        byShortId.set(shortId, {
-            short_id: shortId,
-            store_id: String(warehouse.store_id || '').trim(),
-            enabled: Number(warehouse.enabled ?? 0) ? 1 : 0,
-            stock_count: Number(warehouse.stock_count || 0),
-            actual_stock: Number(warehouse.actual_stock || 0),
-            pre_order: Number(warehouse.pre_order ?? defaultPreOrder ?? 0),
-        });
+  for (const warehouse of warehouses || []) {
+    const shortId = shortStoreId(warehouse.store_id);
+    if (!shortId) continue;
+    byShortId.set(shortId, {
+      short_id: shortId,
+      store_id: String(warehouse.store_id || '').trim(),
+      enabled: Number(warehouse.enabled ?? 0) ? 1 : 0,
+      stock_count: Number(warehouse.stock_count || 0),
+      actual_stock: Number(warehouse.actual_stock || 0),
+      pre_order: Number(warehouse.pre_order ?? defaultPreOrder ?? 0),
+    });
+  }
+
+  for (const shortId of defaults) {
+    if (!byShortId.has(shortId)) {
+      byShortId.set(shortId, {
+        short_id: shortId,
+        store_id: defaultStoreId(shortId, merchantId),
+        enabled: shortId === 'PP1' || shortId === 'PP2' ? 1 : 0,
+        stock_count: 0,
+        actual_stock: 0,
+        pre_order: Number(defaultPreOrder || 0),
+      });
     }
+  }
 
-    for (const shortId of defaults) {
-        if (!byShortId.has(shortId)) {
-            byShortId.set(shortId, {
-                short_id: shortId,
-                store_id: defaultStoreId(shortId, merchantId),
-                enabled: shortId === 'PP1' || shortId === 'PP2' ? 1 : 0,
-                stock_count: 0,
-                actual_stock: 0,
-                pre_order: Number(defaultPreOrder || 0),
-            });
-        }
-    }
-
-    return [...byShortId.values()].sort(compareWarehouseDescriptors);
+  return [...byShortId.values()].sort(compareWarehouseDescriptors);
 }
 
 function compareWarehouseDescriptors(a, b) {
-    return sortWarehouseId(a.short_id) - sortWarehouseId(b.short_id) || a.short_id.localeCompare(b.short_id, 'ru');
+  return sortWarehouseId(a.short_id) - sortWarehouseId(b.short_id) || a.short_id.localeCompare(b.short_id, 'ru');
 }
 
 function sortWarehouseId(value) {
-    const match = String(value || '').match(/^PP(\d+)$/i);
-    return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
+  const match = String(value || '').match(/^PP(\d+)$/i);
+  return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
 }
 
 function defaultStoreId(shortId, merchantId) {
-    const normalizedMerchantId = String(merchantId || '').trim();
-    if (!normalizedMerchantId || normalizedMerchantId === 'CompanyID') {
-        return shortId;
-    }
-    return `${normalizedMerchantId}_${shortId}`;
+  const normalizedMerchantId = String(merchantId || '').trim();
+  if (!normalizedMerchantId || normalizedMerchantId === 'CompanyID') {
+    return shortId;
+  }
+  return `${normalizedMerchantId}_${shortId}`;
 }

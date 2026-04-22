@@ -31,8 +31,6 @@ export function renderAutoPricingSettingsPage({
   const parseNextRunAt = renderLocalDateTime(schedulerState?.nextRunAt);
   const fullParseNextRunAt = renderLocalDateTime(fullSchedulerState?.nextRunAt);
   const uploadNextRunAt = renderLocalDateTime(uploadSchedulerState?.nextRunAt);
-  const hasRunningSessions = fullParseRunning
-    || [...sessions, ...uploadSessions].some((session) => session.status === 'running');
   const latestUploadSession = uploadSessions[0] || null;
   const latestUpload = latestUploadSession ? getUploadDetails(latestUploadSession.details) : null;
   const parseSessionsSummary = summarizeSessions(sessions);
@@ -255,7 +253,6 @@ export function renderAutoPricingSettingsPage({
         </div>`}
       </div>
       ${renderDateTimeScript()}
-      ${hasRunningSessions ? `<script>setTimeout(() => location.reload(), 15000);</script>` : ''}
     `,
   });
 }
@@ -378,11 +375,11 @@ function renderPriceSettingsCard({
             <div class="form-hint">Эти продавцы видны в списке, но расчет цены не будет снижать цену относительно них.</div>
           </div>
 
-          <div class="form-actions" style="margin-top:12px">
+          <div class="form-actions form-actions--compact">
             <button class="btn btn--primary" type="submit">Сохранить</button>
           </div>
         </form>
-        <div class="form-actions" style="margin-top:12px;padding-top:0;border-top:0">
+        <div class="form-actions form-actions--compact">
           <form action="/panel/auto-pricing/run" method="post" style="margin:0">
             <button class="btn btn--accent" type="submit">Запустить расчет цены сейчас</button>
           </form>
@@ -428,11 +425,11 @@ function renderKaspiUploadSettingsCard({
               <div class="form-hint">Ручную загрузку можно запускать с товаров или главной страницы в любой момент.</div>
             </div>
           </div>
-          <div class="form-actions" style="margin-top:12px">
+          <div class="form-actions form-actions--compact">
             <button class="btn btn--primary" type="submit">Сохранить</button>
           </div>
         </form>
-        <div class="form-actions" style="margin-top:12px;padding-top:0;border-top:0">
+        <div class="form-actions form-actions--compact">
           <form action="/panel/kaspi/upload" method="post" style="margin:0">
             <button class="btn btn--accent" type="submit">Загрузить в Kaspi сейчас</button>
           </form>

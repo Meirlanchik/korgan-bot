@@ -73,6 +73,7 @@ import {
   getParseSession,
   deleteParseSession,
   clearParseSessions,
+  syncWarehouseAvailabilityForProducts,
   startParseSession,
   finishParseSession,
   addSyncLog,
@@ -83,6 +84,12 @@ import { logRuntime } from '../logger.js';
 
 const router = Router();
 const RESERVED_PRODUCT_ROUTE_SEGMENTS = new Set(['delete', 'bulk', 'new']);
+const AUTOMATION_SESSION_TYPES = Object.freeze({
+  autoPricing: ['light_parse', 'auto_pricing'],
+  fullParse: ['full_parse', 'selected_products', 'single_product'],
+  kaspiPull: ['kaspi_download'],
+  kaspiPush: ['kaspi_upload'],
+});
 
 let _upload;
 function getUpload() {
@@ -102,16 +109,12 @@ router.get('/', async (req, res, next) => {
     const status = await getCurrentStatus(config.publicDir);
     const stats = getDashboardStats();
     const sessions = getParseSessions({ limit: 30 });
+    const automationState = buildAutomationStateSnapshot(sessions);
     res.type('html').send(renderHome({
       status,
       stats,
       recentLogs: getSyncLogs(10),
-      automationState: {
-        autoPricing: getAutoPricingSchedulerState(),
-        fullParse: getFullParseSchedulerState(),
-        kaspiPull: getKaspiDownloadSchedulerState(),
-        kaspiPush: getKaspiUploadSchedulerState(),
-      },
+      automationState,
       latestSessions: {
         price: sessions.find((session) => ['light_parse', 'auto_pricing'].includes(session.type)) || null,
         build: sessions.find((session) => ['full_parse', 'selected_products', 'single_product'].includes(session.type)) || null,
@@ -134,6 +137,7 @@ router.get('/products', (req, res) => {
     const { sort, order, search, available, category } = req.query;
     const products = getAllProducts({ sort, order });
     const merchantId = getSetting('merchant_id', defaultConfigFromEnv().merchantId);
+    const ignoredMerchantIds = parseMerchantIds(getSetting('ignored_merchant_ids', merchantId));
     const sessions = getParseSessions({ limit: 50 });
     const categories = [...new Set(
       getAllProducts({ sort: 'category', order: 'asc' })
@@ -143,12 +147,12 @@ router.get('/products', (req, res) => {
     const priceCalculationSessions = sessions
       .filter((session) => ['light_parse', 'auto_pricing'].includes(session.type));
     const currentPriceCalculationSession = priceCalculationSessions.find((session) => session.status === 'running') || null;
+    const latestPriceUpdates = getLatestPriceUpdateMap();
     // Attach warehouses summary for each product
     const enriched = products.map((p) => {
       const warehouses = getWarehouses(p.sku);
-      return { ...p, warehouses };
+      return { ...p, warehouses, last_price_updated_at: latestPriceUpdates.get(p.sku) || null };
     });
-    const buildStatesBySku = getBuildStatesBySku(sessions);
     res.type('html').send(renderProductsPage({
       products: enriched,
       counts: getProductCount(),
@@ -161,11 +165,16 @@ router.get('/products', (req, res) => {
       categoryFilter: category ?? '',
       categories,
       merchantId,
+      ignoredMerchantIds,
       priceCalculationState: getAutoPricingSchedulerState(),
       latestPriceCalculationSession: priceCalculationSessions[0] || null,
       currentPriceCalculationSession,
-      priceCalculationProductsCount: getAllProducts({}).filter((product) => Number(product.auto_pricing_enabled) === 1).length,
-      buildStatesBySku,
+      priceCalculationProductsCount: getAllProducts({}).filter((product) =>
+        Number(product.available) === 1
+        && Number(product.auto_pricing_enabled) === 1
+        && Number(product.min_price) > 0
+        && Number(product.max_price) > 0
+      ).length,
     }));
   } catch (error) {
     res.redirect(`/panel/?error=${encodeURIComponent(error.message)}`);
@@ -245,9 +254,6 @@ router.post('/products/bulk/light-parse', (req, res) => {
     }
     if (isKaspiPullRunning()) {
       throw new Error('Сейчас выполняется загрузка товаров из Kaspi. Дождитесь завершения.');
-    }
-    if (isKaspiPushRunning()) {
-      throw new Error('Сейчас выполняется загрузка в Kaspi. Дождитесь завершения.');
     }
 
     const skuSet = new Set(skus);
@@ -379,6 +385,9 @@ router.post('/products/:sku', async (req, res) => {
       for (const w of warehouses) {
         upsertWarehouse(sku, w.store_id, w);
       }
+    }
+    if (formData.available !== null) {
+      syncWarehouseAvailabilityForProducts([sku], formData.available);
     }
 
     recalculateUploadPriceForSku({ sku });
@@ -537,9 +546,6 @@ router.post('/products/:sku/auto-price', async (req, res) => {
     if (isKaspiPullRunning()) {
       throw new Error('Сейчас выполняется загрузка товаров из Kaspi. Дождитесь завершения.');
     }
-    if (isKaspiPushRunning()) {
-      throw new Error('Сейчас выполняется загрузка в Kaspi. Дождитесь завершения.');
-    }
     const result = await runDbAutoPricingForSku({
       sku: req.params.sku,
       historyContext: {
@@ -572,6 +578,7 @@ router.post('/products/:sku/toggle-available', async (req, res) => {
     if (!product) throw new Error('Товар не найден');
     const nextAvailable = product.available ? 0 : 1;
     upsertProduct({ sku: req.params.sku, available: nextAvailable });
+    syncWarehouseAvailabilityForProducts([req.params.sku], nextAvailable);
     await generateAndSaveXml().catch(() => { });
     if (sendActionSuccess(req, res, {
       message: product.available ? 'Снят с продажи' : 'Выставлен в продажу',
@@ -612,8 +619,12 @@ router.post('/products/bulk/update', async (req, res) => {
       updates.pre_order = Number(req.body.bulkPreOrder);
     }
     validateBulkProductUpdates(updates);
+    validateBulkPriceBoundsForProducts(skus, updates);
 
     bulkUpdateProducts(skus, updates);
+    if (updates.available !== undefined) {
+      syncWarehouseAvailabilityForProducts(skus, updates.available);
+    }
     applyBulkWarehouseUpdates({
       skus,
       warehouseUpdates: bulkWarehouseUpdatesFromBody(req.body),
@@ -838,9 +849,6 @@ router.post('/auto-pricing/run', (req, res) => {
     if (isKaspiPullRunning()) {
       throw new Error('Сейчас выполняется загрузка товаров из Kaspi. Дождитесь завершения.');
     }
-    if (isKaspiPushRunning()) {
-      throw new Error('Сейчас выполняется загрузка в Kaspi. Дождитесь завершения.');
-    }
 
     const products = getAllProducts({})
       .filter((product) => product && (product.shop_link || product.kaspi_id || product.sku || product.model));
@@ -876,12 +884,7 @@ router.get('/auto-pricing', (_req, res) => {
 router.get('/settings', (req, res) => {
   try {
     res.type('html').send(renderSettingsPage({
-      automationState: {
-        autoPricing: getAutoPricingSchedulerState(),
-        fullParse: getFullParseSchedulerState(),
-        kaspiPull: getKaspiDownloadSchedulerState(),
-        kaspiPush: getKaspiUploadSchedulerState(),
-      },
+      automationState: buildAutomationStateSnapshot(),
       concurrency: getSetting('auto_pricing_concurrency', '4'),
       message: req.query.message,
       error: req.query.error,
@@ -1214,6 +1217,53 @@ function formatCardBuildMessage(cardBuildInfo) {
   return `Для новых товаров из ${cardBuildInfo.sourceLabel} карточки формируются автоматически.`;
 }
 
+function buildAutomationStateSnapshot(existingSessions = null) {
+  const sessions = Array.isArray(existingSessions) ? existingSessions : getParseSessions({ limit: 160 });
+
+  return {
+    autoPricing: attachAutomationActivity(
+      getAutoPricingSchedulerState(),
+      sessions,
+      AUTOMATION_SESSION_TYPES.autoPricing,
+    ),
+    fullParse: attachAutomationActivity(
+      getFullParseSchedulerState(),
+      sessions,
+      AUTOMATION_SESSION_TYPES.fullParse,
+    ),
+    kaspiPull: attachAutomationActivity(
+      getKaspiDownloadSchedulerState(),
+      sessions,
+      AUTOMATION_SESSION_TYPES.kaspiPull,
+      { fallbackAt: getSetting('last_kaspi_pull_at', '') },
+    ),
+    kaspiPush: attachAutomationActivity(
+      getKaspiUploadSchedulerState(),
+      sessions,
+      AUTOMATION_SESSION_TYPES.kaspiPush,
+      { fallbackAt: getSetting('last_kaspi_push_at', '') },
+    ),
+  };
+}
+
+function attachAutomationActivity(state, sessions, types = [], { fallbackAt = '' } = {}) {
+  const relevantSessions = sessions.filter((session) => types.includes(session.type));
+  const latestSession = relevantSessions[0] || null;
+  const latestCompletedSession = relevantSessions.find((session) => Boolean(session.finished_at)) || null;
+  const latestSuccessSession = relevantSessions.find((session) => session.status === 'success') || null;
+
+  return {
+    ...state,
+    lastActivityAt: latestCompletedSession?.finished_at || latestSession?.started_at || fallbackAt || '',
+    lastStartedAt: latestSession?.started_at || '',
+    lastFinishedAt: latestCompletedSession?.finished_at || fallbackAt || '',
+    lastSuccessAt: latestSuccessSession?.finished_at || latestSuccessSession?.started_at || '',
+    lastStatus: latestSession?.status || '',
+    lastMessage: latestSession?.message || '',
+    currentStartedAt: latestSession?.status === 'running' ? latestSession.started_at : '',
+  };
+}
+
 function assertProductsCanBeDeleted() {
   if (isFullParseRunning()) {
     throw new Error('Нельзя удалять товары во время парсинга.');
@@ -1270,7 +1320,7 @@ function validateProductFormData(data = {}) {
   if (maxPrice !== null && maxPrice < 0) {
     throw new Error('Максимальная цена не может быть отрицательной.');
   }
-  if (minPrice !== null && maxPrice !== null && minPrice > 0 && maxPrice > 0 && minPrice > maxPrice) {
+  if (minPrice !== null && maxPrice !== null && minPrice > maxPrice) {
     throw new Error('Минимальная цена не может быть больше максимальной.');
   }
   if (priceStep !== null && priceStep < 1) {
@@ -1288,6 +1338,34 @@ function validateBulkProductUpdates(updates = {}) {
     pre_order: updates.pre_order,
     price_step: updates.price_step,
   });
+}
+
+function validateBulkPriceBoundsForProducts(skus = [], updates = {}) {
+  if (updates.min_price === undefined && updates.max_price === undefined) return;
+
+  for (const sku of skus) {
+    const product = getProduct(sku);
+    const minPrice = updates.min_price !== undefined
+      ? Number(updates.min_price)
+      : optionalNumber(product?.min_price);
+    const maxPrice = updates.max_price !== undefined
+      ? Number(updates.max_price)
+      : optionalNumber(product?.max_price);
+    if (minPrice !== null && maxPrice !== null && minPrice > maxPrice) {
+      throw new Error(`SKU ${sku}: минимальная цена не может быть больше максимальной.`);
+    }
+  }
+}
+
+function getLatestPriceUpdateMap() {
+  const latestBySku = new Map();
+  for (const event of getAllProductHistory({ limit: 10000, eventType: 'light_parse', status: 'success' })) {
+    const sku = String(event.sku || '').trim();
+    if (sku && !latestBySku.has(sku)) {
+      latestBySku.set(sku, event.created_at);
+    }
+  }
+  return latestBySku;
 }
 
 function validateWarehouses(warehouses = []) {

@@ -3,7 +3,6 @@ import { renderLayout } from './layout.js';
 
 export function renderParseSessionsPage({ sessions, message, error }) {
   const summary = summarizeSessions(sessions);
-  const hasRunningSessions = summary.running > 0;
   const rows = sessions.map(renderSessionRow).join('');
 
   return renderLayout({
@@ -50,7 +49,6 @@ export function renderParseSessionsPage({ sessions, message, error }) {
         </div>`}
       </div>
       ${renderDateTimeScript()}
-      ${hasRunningSessions ? `<script>setTimeout(() => location.reload(), 10000);</script>` : ''}
     `,
   });
 }
@@ -74,7 +72,7 @@ export function renderParseSessionDetailPage({
     message,
     error,
     content: `
-      <div class="session-toolbar" style="margin-bottom:16px">
+      <div class="session-toolbar session-toolbar--page">
         <a class="btn btn--ghost btn--sm" href="/panel/parse-sessions">К списку сессий</a>
         <a class="btn btn--ghost btn--sm" href="/panel/auto-pricing">К настройкам</a>
       </div>
@@ -151,7 +149,6 @@ export function renderParseSessionDetailPage({
       </div>
 
       ${renderDateTimeScript()}
-      ${session.status === 'running' ? `<script>setTimeout(() => location.reload(), 10000);</script>` : ''}
     `,
   });
 }

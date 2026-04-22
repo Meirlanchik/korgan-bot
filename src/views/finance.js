@@ -301,7 +301,7 @@ export function renderFinancePage({
         <div class="card__body">
           <form method="post" action="/panel/finance/products/save">
             <input type="hidden" name="returnTo" value="${escapeAttr(returnTo)}">
-            <div class="form-actions" style="padding-top:0;border-top:0;margin-top:0;margin-bottom:14px">
+            <div class="form-actions form-actions--flush" style="margin-bottom:14px">
               <button class="btn btn--primary" type="submit">Сохранить себестоимость и комиссии</button>
             </div>
             <div class="table-wrap">

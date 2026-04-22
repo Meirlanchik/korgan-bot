@@ -122,19 +122,23 @@ export async function runAutoPricingNow({
   if (kaspiPullInProgress) {
     throw new Error('Сейчас идет загрузка товаров из Kaspi. Дождитесь завершения.');
   }
-  if (kaspiPushInProgress) {
-    throw new Error('Сейчас идет загрузка в Kaspi. Дождитесь завершения.');
-  }
 
-  autoPricingInProgress = true;
   const concurrency = getAutoPricingConcurrency();
   const manualProductList = Array.isArray(providedProducts);
   const sourceProducts = manualProductList ? providedProducts : getAllProducts({});
   const products = sourceProducts.filter(
-    (p) => (manualProductList || p.auto_pricing_enabled)
+    (p) => (manualProductList || Number(p.auto_pricing_enabled) === 1)
+      && (manualProductList || Number(p.available) === 1)
       && (p.shop_link || p.kaspi_id || p.sku || p.model)
-      && (manualProductList || (p.min_price != null && p.max_price != null)),
+      && (manualProductList || (Number(p.min_price) > 0 && Number(p.max_price) > 0)),
   );
+
+  if (!products.length && triggerSource === 'auto') {
+    console.log('[auto-pricing] Расчет цены по расписанию пропущен: нет товаров для авторасчета');
+    return [];
+  }
+
+  autoPricingInProgress = true;
   const session = startParseSession({
     type,
     triggerSource,
@@ -416,9 +420,6 @@ export function startKaspiUploadNow({
   if (fullParseInProgress) {
     throw new Error('Сейчас идет формирование карточек. Дождитесь завершения перед загрузкой в Kaspi.');
   }
-  if (autoPricingInProgress) {
-    throw new Error('Сейчас идет расчет цены. Дождитесь завершения перед загрузкой в Kaspi.');
-  }
 
   const session = startParseSession({
     type: 'kaspi_upload',
@@ -475,7 +476,7 @@ function scheduleAutoPricingNextRun({ logChanges = false, delayMs = null } = {})
     : state.intervalMs;
   autoPricingNextRunAt = new Date(Date.now() + nextDelayMs).toISOString();
   autoPricingTimer = setTimeout(async () => {
-    if (autoPricingInProgress || fullParseInProgress || kaspiPullInProgress || kaspiPushInProgress) {
+    if (autoPricingInProgress || fullParseInProgress || kaspiPullInProgress) {
       scheduleAutoPricingNextRun({ delayMs: SCHEDULER_BUSY_RETRY_MS });
       return;
     }
@@ -622,7 +623,7 @@ function scheduleKaspiPushNextRun({ logChanges = false, delayMs = null } = {}) {
     : state.intervalMs;
   kaspiPushNextRunAt = new Date(Date.now() + nextDelayMs).toISOString();
   kaspiPushTimer = setTimeout(async () => {
-    if (kaspiPushInProgress || kaspiPullInProgress || autoPricingInProgress || fullParseInProgress) {
+    if (kaspiPushInProgress || kaspiPullInProgress || fullParseInProgress) {
       scheduleKaspiPushNextRun({ delayMs: SCHEDULER_BUSY_RETRY_MS });
       return;
     }
@@ -837,7 +838,7 @@ async function executeKaspiUploadTask({
   };
 
   try {
-    await pushMessage('Формирую XML и отправляю файл в Kaspi.');
+    await pushMessage('Формирую XML по текущим ценам сайта и отправляю файл в Kaspi.');
     const result = await pushKaspiPriceList(pushMessage, waitForKaspiOtp, { triggerSource });
     let upload = mergeUploadStatus(result.statusInfo, {
       filePath: result.filePath,

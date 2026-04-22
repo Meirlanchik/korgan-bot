@@ -719,18 +719,17 @@ async function triggerPriceListUpload(page, config, filePath, onMessage) {
   await waitForOptionalNetworkIdle(page);
   await waitForAnyVisible(page, config.uploadResultSelectors, 60_000).catch(() => {});
 
-  const statusText = await readPageStatusText(page);
-  const failed = await firstVisibleLocator(page, config.uploadErrorSelectors);
-  if (failed) {
-    const message = await failed.textContent().catch(() => '');
-    throw new Error(`Kaspi не принял прайс-лист${message ? `: ${message.trim()}` : ''}`);
+  const statusInfo = await readUploadSummary(page);
+  const fatalUploadError = await detectKaspiUploadFailure(page, config, statusInfo);
+  if (fatalUploadError) {
+    throw new Error(`Kaspi не принял прайс-лист${fatalUploadError ? `: ${fatalUploadError}` : ''}`);
   }
 
   if (response && !response.ok()) {
     throw new Error(`Kaspi вернул ошибку при загрузке: HTTP ${response.status()}`);
   }
 
-  const statusInfo = await readUploadSummary(page);
+  const statusText = await readPageStatusText(page);
 
   return {
     filePath,
@@ -1359,10 +1358,12 @@ function readConfig(downloadDir, sessionDir) {
     uploadErrorSelectors: splitSelectors(process.env.KASPI_UPLOAD_ERROR_SELECTORS, [
       '.help.is-danger',
       '.is-danger',
-      'text=Ошибка',
       'text=Неверный формат',
       'text=Не удалось',
       'text=Файл не загружен',
+      'text=Не удалось загрузить',
+      'text=Не удалось обработать',
+      'text=Произошла ошибка',
     ]),
     merchantProductSelectors: splitSelectors(process.env.KASPI_MERCHANT_PRODUCT_SELECTORS, [
       'text=Посмотреть на Kaspi.kz',
@@ -1488,6 +1489,51 @@ async function readUploadSummary(page) {
     statusText: progressStatus || processingMessage || acceptedMessage || modalMessage || (phase === 'completed' ? 'Обработка завершена' : ''),
     url: page.url(),
   };
+}
+
+async function detectKaspiUploadFailure(page, config, statusInfo = null) {
+  const failed = await firstVisibleLocator(page, config.uploadErrorSelectors);
+  if (!failed) {
+    return '';
+  }
+
+  const message = normalizeText(
+    await failed.innerText().catch(() => '')
+    || await failed.textContent().catch(() => ''),
+  );
+
+  if (!message) {
+    return 'Kaspi показал сообщение об ошибке загрузки.';
+  }
+
+  if (looksLikeUploadSummaryCounter(message) || isCompletedOrAcceptedUpload(statusInfo)) {
+    return '';
+  }
+
+  return message;
+}
+
+function looksLikeUploadSummaryCounter(message) {
+  const normalized = normalizeText(message);
+  if (!normalized) {
+    return false;
+  }
+
+  return [
+    /товары\s+с\s+ошибками/i,
+    /товары\s+с\s+предупреждениями/i,
+    /нераспознанные\s+товары/i,
+    /ограниченные\s+товары/i,
+    /товары\s+без\s+изменений/i,
+    /обработано/i,
+    /дата\s+загрузки/i,
+    /сейчас\s+активен\s+прайс/i,
+  ].some((pattern) => pattern.test(normalized));
+}
+
+function isCompletedOrAcceptedUpload(statusInfo = null) {
+  const phase = String(statusInfo?.phase || '').trim();
+  return phase === 'accepted' || phase === 'processing' || phase === 'completed';
 }
 
 async function readLatestPriceListHistoryEntry(page, config) {

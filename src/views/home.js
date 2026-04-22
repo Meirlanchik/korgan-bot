@@ -47,6 +47,24 @@ export function renderHome({
         ${renderOperationStat('Выгрузка в Kaspi', latestSessions.push, '<svg width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>')}
       </div>
 
+      <div class="card">
+        <div class="card__header">
+          <div>
+            <h3 class="card__title">Быстрые Действия</h3>
+            <div class="card__subtitle">Основные операции вынесены на главную, чтобы не переходить между вкладками.</div>
+          </div>
+          <a class="btn btn--ghost btn--sm" href="/panel/settings">Открыть настройки</a>
+        </div>
+        <div class="card__body">
+          <div class="home-action-grid">
+            ${renderHomeAction('/panel/kaspi/download', 'Обновить с Kaspi', 'Скачать товары из кабинета и обновить локальные данные.', 'btn btn--accent', true)}
+            ${renderHomeAction('/panel/kaspi/upload', 'Загрузить в Kaspi', 'Отправить текущий XML с ценами, которые уже сохранены на сайте.', 'btn btn--success', true)}
+            ${renderHomeAction('/panel/auto-pricing/run', 'Рассчитать цены', 'Запустить авторасчет без ожидания следующего интервала.', 'btn btn--ghost')}
+            ${renderHomeAction('/panel/products/parse-all', 'Сформировать карточки', 'Обновить карточки и продавцов для всех товаров.', 'btn btn--ghost')}
+          </div>
+        </div>
+      </div>
+
       <div class="card card--flush">
         <div class="card__header">
           <h3 class="card__title">Уведомления</h3>
@@ -58,25 +76,6 @@ export function renderHome({
       </div>
 
       ${renderDateTimeScript()}
-      <script>
-      (() => {
-        let refreshTimer = null;
-        const scheduleRefresh = () => {
-          if (refreshTimer) return;
-          refreshTimer = setTimeout(() => {
-            location.reload();
-          }, 1200);
-        };
-
-        document.addEventListener('kaspi:parse_session_updated', (event) => {
-          if (event.detail && event.detail.status !== 'running') {
-            scheduleRefresh();
-          }
-        });
-        ['kaspi:sync_log_added', 'kaspi:history_event_added', 'kaspi:setting_updated']
-          .forEach((eventName) => document.addEventListener(eventName, scheduleRefresh));
-      })();
-      </script>
     `,
   });
 }
@@ -143,6 +142,16 @@ function renderOperationStat(label, session, icon = '') {
     : 'Данных пока нет';
 
   return renderStat(label, escapeHtml(status), note, statusColor, icon);
+}
+
+function renderHomeAction(action, label, hint, buttonClass, withReturnTo = false) {
+  return `
+    <form class="home-action" action="${escapeAttr(action)}" method="post" data-async-form="1">
+      ${withReturnTo ? '<input type="hidden" name="returnTo" value="/panel/">' : ''}
+      <button class="${escapeAttr(buttonClass)}" type="submit">${escapeHtml(label)}</button>
+      <div class="home-action__hint">${escapeHtml(hint)}</div>
+    </form>
+  `;
 }
 
 function formatIntervalMinutes(value) {
